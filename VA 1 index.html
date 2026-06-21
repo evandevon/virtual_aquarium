@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Classroom Aquarium</title>
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #02131c; }
+    /* Touch-friendly, consistent look for the p5 DOM controls (buttons / slider / select) */
+    button {
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      color: #eaf6ff;
+      background: rgba(20, 70, 100, 0.85);
+      border: 1px solid rgba(140, 210, 245, 0.5);
+      border-radius: 12px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.12s ease, transform 0.06s ease;
+    }
+    button:hover  { background: rgba(30, 95, 130, 0.95); }
+    button:active { transform: scale(0.97); }
+    .primary-btn {
+      background: rgba(40, 150, 110, 0.92);
+      border-color: rgba(150, 245, 200, 0.6);
+      font-size: 17px;
+    }
+    .primary-btn:hover { background: rgba(50, 175, 130, 1); }
+    select {
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px; color: #eaf6ff;
+      background: rgba(10, 40, 60, 0.9);
+      border: 1px solid rgba(140, 210, 245, 0.4);
+      border-radius: 10px; padding: 4px;
+    }
+    input[type=range] { accent-color: #4fd6ff; height: 28px; }
+  </style>
+
+  <!--
+    p5.js + p5.sound.
+    DEFAULT: CDN (works immediately when published).
+    RECOMMENDED for school networks that block external domains: download the two
+    files below into this folder and replace the CDN <script> tags with:
+        <script src="p5.min.js"></script>
+        <script src="p5.sound.min.js"></script>
+    Download from:
+        https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js
+        https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/addons/p5.sound.min.js
+  -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/addons/p5.sound.min.js"></script>
+</head>
+<body>
+  <script src="sketch.js"></script>
+</body>
+</html>
