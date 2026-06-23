@@ -40,6 +40,7 @@ const GROWTH_CAP = 2.5;        // max multiple of starting size
 const CLONE_EVERY = 3;         // an original spawns a clone every N feeds
 const CLONE_SCALE = 0.4;       // clone starts at 40% of parent's current size
 const SATIATED_FRAMES = 300;   // ~5s a fish ignores food after a bite (slows growth, shares food)
+const FISH_START_SCALE = 0.8;  // size of brand-new fish (1 = old size; lower = smaller)
 
 // ---- Shark ---- (easy to tweak)
 const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
@@ -174,7 +175,7 @@ function buildControls() {
   captureBtn.mousePressed(captureFish);
 
   uploadImgBtn = createButton("🖼  Upload Image");
-  uploadImgBtn.mousePressed(() => imgFileInput.elt.click());
+  uploadImgBtn.mousePressed(() => { imgFileInput.elt.value = ""; imgFileInput.elt.click(); });
 
   pasteBtn = createButton("📋  Paste (Ctrl+V)");
   pasteBtn.mousePressed(pasteFromClipboard);
@@ -187,8 +188,9 @@ function buildControls() {
 
   restoreBtn = createButton("📂  Restore Tank");
   restoreBtn.mousePressed(() => {
-    if (!libsLoaded) loadLibraries().then(() => { libsLoaded = true; zipFileInput.elt.click(); });
-    else zipFileInput.elt.click();
+    const open = () => { zipFileInput.elt.value = ""; zipFileInput.elt.click(); };
+    if (!libsLoaded) loadLibraries().then(() => { libsLoaded = true; open(); });
+    else open();
   });
 
   muteBtn = createButton("🔊  Sound On");
@@ -919,7 +921,9 @@ class Fish {
   constructor(img, a, opts = {}) {
     this.img = img;                       // clones share their parent's image
     this.isClone = !!opts.isClone;
-    this.baseLongest = opts.baseLongest || random(85, 125);
+    this.baseLongest = opts.baseLongest != null
+      ? opts.baseLongest                       // clones inherit an already-scaled size
+      : random(85, 125) * FISH_START_SCALE;    // new fish use the start scale
     this.growth = 1;
     this.feeds = 0;
     this._setSize();
