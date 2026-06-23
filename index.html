@@ -6,6 +6,17 @@
   <title>Classroom Aquarium</title>
   <style>
     html, body { margin: 0; padding: 0; overflow: hidden; background: #02131c; }
+    /* Suppress long-press selection / callout on the CANVAS only, so the
+       hold-to-feed gesture isn't hijacked — but leave text fields editable. */
+    canvas {
+      touch-action: none;
+      -webkit-user-select: none; user-select: none;
+      -webkit-touch-callout: none;
+    }
+    input, textarea {
+      -webkit-user-select: text; user-select: text;
+      -webkit-touch-callout: default;
+    }
     /* Touch-friendly, consistent look for the p5 DOM controls (buttons / slider / select) */
     button {
       font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
