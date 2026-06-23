@@ -1,11 +1,14 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM
+   CLASSROOM AQUARIUM   —   v1.0
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
    - Press a fish to catch it; quick release flips it, long press deletes it.
    - Backup / restore the tank as a ZIP.
+
+   VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
+const VERSION = "v1.0";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -693,7 +696,7 @@ function drawLeftColumn() {
   // FPS + instructions (canvas text is allowed; only fish-following text is not)
   noStroke(); fill(180, 220, 245); textAlign(LEFT, TOP); textSize(13);
   let ty = textBlockY;
-  text("FPS: " + nf(frameRate(), 2, 0), previewMargin, ty); ty += 22;
+  text("FPS: " + nf(frameRate(), 2, 0) + "     " + VERSION, previewMargin, ty); ty += 22;
   fill(150, 195, 225); textSize(12);
   const lines = [
     "• Draw a fish, hold it to the webcam,",
