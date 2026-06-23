@@ -1,4 +1,5 @@
 # Classroom Aquarium
+https://evandevon.github.io/virtual_aquarium/
 
 A relaxing interactive display. Kids draw fish on paper and scan them with a
 webcam, paste an image, or upload a file — each creature swims around its own
