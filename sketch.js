@@ -39,10 +39,16 @@ const GROWTH_PER_FEED = 1.1;   // x1.1 size each flake eaten
 const GROWTH_CAP = 2.5;        // max multiple of starting size
 const CLONE_EVERY = 3;         // an original spawns a clone every N feeds
 const CLONE_SCALE = 0.4;       // clone starts at 40% of parent's current size
+const SATIATED_FRAMES = 300;   // ~5s a fish ignores food after a bite (slows growth, shares food)
 
-// ---- Shark ----
+// ---- Shark ---- (easy to tweak)
 const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
-const SHARK_SCARE_RADIUS = 230;          // fish flee/hide within this of the shark
+const SHARK_SCARE_RADIUS = 450;          // fish notice & flee within this of the shark
+const SHARK_SPEED = 1.15;                // px/frame (lower = slower)
+const SHARK_SCALE = 1.5;                 // overall shark size multiplier
+
+// ---- Foreground rocks & coral ----
+const FOREGROUND_SCALE = 1.5;            // size of the rocks/coral clusters
 
 let appState = "intro";        // "intro" | "running"
 
@@ -86,8 +92,13 @@ let press = null;
 let controls = [];
 let captureBtn, uploadImgBtn, pasteBtn, backupBtn, restoreBtn, muteBtn;
 let rotateBtn, flipHBtn, flipVBtn;     // overlaid on the preview
+let musicLinkBtn, musicToggleBtn, musicInput, musicPlayBtn; // YouTube background music
 let imgFileInput, zipFileInput;
 let muted = false;
+
+// YouTube background music (plays via the official embedded player, picture hidden)
+let ytPlayer = null;
+let ytPlaying = false;
 
 // Backup libs (lazy-loaded)
 let libsLoaded = false;
@@ -183,6 +194,24 @@ function buildControls() {
   muteBtn = createButton("🔊  Sound On");
   muteBtn.mousePressed(toggleMute);
 
+  // YouTube background music: a button reveals a link field; a toggle plays/pauses.
+  musicLinkBtn = createButton("🎵  Music Link");
+  musicLinkBtn.mousePressed(toggleMusicInput);
+
+  musicToggleBtn = createButton("🎵  Music Off");
+  musicToggleBtn.mousePressed(toggleYouTubeMusic);
+
+  musicInput = createInput("");
+  musicInput.attribute("placeholder", "Paste a YouTube link…");
+  musicInput.style("display", "none");
+  musicInput.elt.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") startYouTubeMusic(musicInput.value());
+  });
+
+  musicPlayBtn = createButton("▶");
+  musicPlayBtn.mousePressed(() => startYouTubeMusic(musicInput.value()));
+  musicPlayBtn.style("display", "none");
+
   // Small transform buttons overlaid on the mask preview (applied before capture)
   rotateBtn = createButton("↻");
   rotateBtn.mousePressed(() => { previewTransform.rot = (previewTransform.rot + 1) % 4; });
@@ -205,7 +234,8 @@ function buildControls() {
   zipFileInput.style("display", "none");
 
   controls = [thresholdSlider, videoSelect, captureBtn, uploadImgBtn, pasteBtn,
-              backupBtn, restoreBtn, muteBtn, rotateBtn, flipHBtn, flipVBtn];
+              backupBtn, restoreBtn, muteBtn, musicLinkBtn, musicToggleBtn,
+              rotateBtn, flipHBtn, flipVBtn];
 }
 
 function layoutControls() {
@@ -231,6 +261,13 @@ function layoutControls() {
   full(backupBtn, 42);
   full(restoreBtn, 42);
   full(muteBtn, 42);
+  full(musicLinkBtn, 42);
+  full(musicToggleBtn, 42);
+
+  // The link entry field pops up along the top of the aquarium.
+  const ax = previewW + previewMargin * 2;
+  musicInput.position(ax + 12, 14); musicInput.size(width - ax - 80, 30);
+  musicPlayBtn.position(width - 56, 12); musicPlayBtn.size(44, 34);
 
   textBlockY = y + 6; // canvas text starts here
 }
@@ -245,6 +282,83 @@ function toggleMute() {
   muted = !muted;
   if (bgMusic) bgMusic.setVolume(muted ? 0 : 0.3);
   muteBtn.html(muted ? "🔇  Sound Off" : "🔊  Sound On");
+}
+
+// ============================ YOUTUBE MUSIC ==============================
+// Plays a YouTube link through the official embedded player with the picture
+// hidden off-screen, so effectively you hear just the audio. Needs YouTube to
+// be reachable (may be blocked on school networks) and the video to allow embeds.
+
+function toggleMusicInput() {
+  const showing = musicInput.elt.style.display !== "none";
+  const d = showing ? "none" : "block";
+  musicInput.style("display", d);
+  musicPlayBtn.style("display", d);
+  if (!showing) musicInput.elt.focus();
+}
+
+function parseYouTubeId(url) {
+  if (!url) return null;
+  url = url.trim();
+  const patterns = [/[?&]v=([\w-]{11})/, /youtu\.be\/([\w-]{11})/, /embed\/([\w-]{11})/, /shorts\/([\w-]{11})/];
+  for (const p of patterns) { const m = url.match(p); if (m) return m[1]; }
+  if (/^[\w-]{11}$/.test(url)) return url; // bare 11-char id
+  return null;
+}
+
+function loadYouTubeAPI() {
+  return new Promise((resolve, reject) => {
+    if (window.YT && window.YT.Player) { resolve(); return; }
+    window.onYouTubeIframeAPIReady = () => resolve();
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    tag.onerror = () => reject(new Error("blocked"));
+    document.head.appendChild(tag);
+  });
+}
+
+async function startYouTubeMusic(url) {
+  const id = parseYouTubeId(url);
+  if (!id) { alert("Couldn't read that link. Paste a full YouTube URL (youtube.com/watch?v=… or youtu.be/…)."); return; }
+
+  try { await loadYouTubeAPI(); }
+  catch (e) { alert("Couldn't reach YouTube — your network may block it. This feature needs YouTube access."); return; }
+
+  // Hidden host element (off-screen so only audio is noticed)
+  let host = document.getElementById("yt-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "yt-host";
+    host.style.cssText = "position:absolute;left:-10000px;top:0;width:320px;height:180px;";
+    document.body.appendChild(host);
+  }
+
+  if (ytPlayer) {
+    ytPlayer.loadVideoById(id);
+    ytPlayer.playVideo();
+    ytPlaying = true; updateMusicToggle();
+  } else {
+    ytPlayer = new YT.Player("yt-host", {
+      videoId: id,
+      playerVars: { autoplay: 1, controls: 0, loop: 1, playlist: id },
+      events: {
+        onReady: (e) => { e.target.setVolume(60); e.target.playVideo(); ytPlaying = true; updateMusicToggle(); },
+        onError: () => alert("That video can't be played here (it may block embedding). Try another link."),
+      },
+    });
+  }
+  toggleMusicInput(); // tuck the field away again
+}
+
+function toggleYouTubeMusic() {
+  if (!ytPlayer) { toggleMusicInput(); return; } // no track yet -> open the field
+  if (ytPlaying) { ytPlayer.pauseVideo(); ytPlaying = false; }
+  else { ytPlayer.playVideo(); ytPlaying = true; }
+  updateMusicToggle();
+}
+
+function updateMusicToggle() {
+  if (musicToggleBtn) musicToggleBtn.html(ytPlaying ? "🎵  Music On" : "🎵  Music Off");
 }
 
 // ============================ WEBCAM =====================================
@@ -789,12 +903,15 @@ function deleteFish(f) {
 }
 
 function keyPressed() {
+  // Ignore keys while typing in a text field (e.g. the music link box).
+  const ae = document.activeElement;
+  if (ae && ae.tagName === "INPUT") return;
   if (appState === "running" && key === " ") captureFish();
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
-  if (appState === "running") buildForeground(aquarium());
+  if (appState === "running") { buildForeground(aquarium()); layoutControls(); }
 }
 
 // ============================ FISH =======================================
@@ -821,6 +938,7 @@ class Fish {
     this.caught = false;
     this.fleeVy = 0;
     this.seekVy = 0;
+    this.satiated = 0;
     this.hideX = 0;
     this.hideY = 0;
   }
@@ -834,11 +952,13 @@ class Fish {
     }
   }
 
-  // Eat a flake: grow, and (originals only) clone every few feeds.
+  // Eat a flake: grow, become briefly uninterested in food, and (originals
+  // only) clone every few feeds.
   eat() {
     this.feeds++;
     this.growth = Math.min(this.growth * GROWTH_PER_FEED, GROWTH_CAP);
     this._setSize();
+    this.satiated = random(SATIATED_FRAMES * 0.8, SATIATED_FRAMES * 1.4);
     if (!this.isClone && this.feeds % CLONE_EVERY === 0 && fishArray.length < FISH_CAP) {
       pendingClones.push(this);
     }
@@ -874,6 +994,7 @@ class Fish {
 
   update(a, food) {
     this.swayTime += 0.05;
+    if (this.satiated > 0) this.satiated--;
     if (this.caught) return; // frozen while held
 
     let vyTarget = 0;
@@ -888,9 +1009,9 @@ class Fish {
       this.speedMult += (this.speedMultTarget - this.speedMult) * 0.12;
       vyTarget = constrain(dy * 0.06, -this.baseSpeed * 3, this.baseSpeed * 3);
     } else {
-      // Look for the nearest flake within range.
+      // Look for the nearest flake within range — unless recently fed.
       let target = null, best = SEEK_RADIUS * SEEK_RADIUS;
-      if (food) {
+      if (food && this.satiated <= 0) {
         for (const fl of food) {
           if (fl.eaten) continue;
           const dx = fl.x - this.x, dy = fl.y - this.y, d2 = dx * dx + dy * dy;
@@ -1047,12 +1168,12 @@ class Flake {
 // Black silhouette that crosses the tank. It only scares; it never eats fish.
 class Shark {
   constructor(a) {
-    this.len = 230;
+    this.len = 230 * SHARK_SCALE;
     this.fromLeft = random() < 0.5;
     this.dir = this.fromLeft ? 1 : -1;
     this.x = this.fromLeft ? -this.len : a.w + this.len;
     this.y = random(a.h * 0.2, a.h * 0.55);
-    this.speed = 2.3;
+    this.speed = SHARK_SPEED;
     this.sway = random(TWO_PI);
     this.done = false;
   }
@@ -1067,6 +1188,7 @@ class Shark {
     push();
     translate(this.x, this.y);
     if (this.dir < 0) scale(-1, 1);      // art faces right
+    scale(SHARK_SCALE);                  // overall size
     const tailKick = Math.sin(this.sway * 3) * 8;
     noStroke();
     fill(6, 12, 16, 235);
@@ -1104,8 +1226,8 @@ function buildForeground(a) {
 function makeRock(x, a) {
   const blobs = [];
   const count = floor(random(4, 7));
-  const baseW = random(120, 200);
-  const baseH = random(80, 150);
+  const baseW = random(120, 200) * FOREGROUND_SCALE;
+  const baseH = random(80, 150) * FOREGROUND_SCALE;
   for (let i = 0; i < count; i++) {
     const tone = random(38, 64);
     blobs.push({
@@ -1125,13 +1247,13 @@ function makeCoral(x, a) {
   const base = random(palette);
   const branches = [];
   const count = floor(random(3, 6));
-  const height = random(110, 190);
+  const height = random(110, 190) * FOREGROUND_SCALE;
   for (let i = 0; i < count; i++) {
     branches.push({
-      x: random(-50, 50),
+      x: random(-50, 50) * FOREGROUND_SCALE,
       len: random(height * 0.5, height),
       lean: random(-0.5, 0.5),
-      thick: random(8, 16),
+      thick: random(8, 16) * FOREGROUND_SCALE,
       col: [base[0] + random(-25, 25), base[1] + random(-25, 25), base[2] + random(-25, 25)],
     });
   }
