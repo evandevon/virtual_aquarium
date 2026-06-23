@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM   —   v1.0
+   CLASSROOM AQUARIUM   —   v1.1
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.0";
+const VERSION = "v1.1";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -103,6 +103,7 @@ let muted = false;
 // YouTube background music (plays via the official embedded player, picture hidden)
 let ytPlayer = null;
 let ytPlaying = false;
+let lastPasteMs = -9999;       // de-dupe between the paste event and Ctrl+V fallback
 
 // Backup libs (lazy-loaded)
 let libsLoaded = false;
@@ -177,19 +178,20 @@ function buildControls() {
   captureBtn.elt.classList.add("primary-btn");
   captureBtn.mousePressed(captureFish);
 
-  uploadImgBtn = createButton("🖼  Upload Image");
+  uploadImgBtn = createButton("🖼  Upload");
   uploadImgBtn.mousePressed(() => { imgFileInput.elt.value = ""; imgFileInput.elt.click(); });
 
-  pasteBtn = createButton("📋  Paste (Ctrl+V)");
+  pasteBtn = createButton("📋  Paste");
+  pasteBtn.attribute("title", "Paste an image (or press Ctrl+V)");
   pasteBtn.mousePressed(pasteFromClipboard);
 
-  backupBtn = createButton("💾  Backup Tank");
+  backupBtn = createButton("💾  Backup");
   backupBtn.mousePressed(() => {
     if (!libsLoaded) loadLibraries().then(() => { libsLoaded = true; backupFish(); });
     else backupFish();
   });
 
-  restoreBtn = createButton("📂  Restore Tank");
+  restoreBtn = createButton("📂  Restore");
   restoreBtn.mousePressed(() => {
     const open = () => { zipFileInput.elt.value = ""; zipFileInput.elt.click(); };
     if (!libsLoaded) loadLibraries().then(() => { libsLoaded = true; open(); });
@@ -199,12 +201,18 @@ function buildControls() {
   muteBtn = createButton("🔊  Sound On");
   muteBtn.mousePressed(toggleMute);
 
-  // YouTube background music: a button reveals a link field; a toggle plays/pauses.
-  musicLinkBtn = createButton("🎵  Music Link");
+  // YouTube background music: short link button + volume-icon toggle + volume slider.
+  musicLinkBtn = createButton("🎵  Music");
+  musicLinkBtn.attribute("title", "Add background music from a YouTube link");
   musicLinkBtn.mousePressed(toggleMusicInput);
 
-  musicToggleBtn = createButton("🎵  Music Off");
+  musicToggleBtn = createButton("🔇");
+  musicToggleBtn.attribute("title", "Turn the music on/off");
   musicToggleBtn.mousePressed(toggleYouTubeMusic);
+
+  musicVolSlider = createSlider(0, 100, 60);
+  musicVolSlider.attribute("title", "Music volume");
+  musicVolSlider.input(() => { if (ytPlayer && ytPlayer.setVolume) ytPlayer.setVolume(musicVolSlider.value()); });
 
   musicInput = createInput("");
   musicInput.attribute("placeholder", "Paste a YouTube link…");
@@ -240,7 +248,10 @@ function buildControls() {
 
   controls = [thresholdSlider, videoSelect, captureBtn, uploadImgBtn, pasteBtn,
               backupBtn, restoreBtn, muteBtn, musicLinkBtn, musicToggleBtn,
-              rotateBtn, flipHBtn, flipVBtn];
+              musicVolSlider, rotateBtn, flipHBtn, flipVBtn];
+
+  // Keep all DOM controls above the canvas so clicks/focus land on them.
+  for (const c of [...controls, musicInput, musicPlayBtn]) c.style("z-index", "5");
 }
 
 function layoutControls() {
@@ -256,18 +267,29 @@ function layoutControls() {
   let y = previewMargin + previewH;            // below webcam preview
   y += previewMargin + previewH + previewMargin; // below mask preview
 
-  videoSelect.position(x, y); videoSelect.size(previewW); y += 38;
-  thresholdSlider.position(x, y); thresholdSlider.style("width", previewW + "px"); y += 38;
+  const W = previewW;            // 220
+  const H = 34, G = 6;           // compact button height + gap
+  const halfW = (W - G) / 2;
 
-  const full = (b, h) => { b.position(x, y); b.size(previewW, h); y += h + 8; };
-  full(captureBtn, 50);
-  full(uploadImgBtn, 42);
-  full(pasteBtn, 42);
-  full(backupBtn, 42);
-  full(restoreBtn, 42);
-  full(muteBtn, 42);
-  full(musicLinkBtn, 42);
-  full(musicToggleBtn, 42);
+  videoSelect.position(x, y); videoSelect.size(W); y += 32;
+  thresholdSlider.position(x, y); thresholdSlider.style("width", W + "px"); y += 30;
+
+  captureBtn.position(x, y); captureBtn.size(W, 44); y += 44 + G;
+
+  // Two-up rows
+  uploadImgBtn.position(x, y); uploadImgBtn.size(halfW, H);
+  pasteBtn.position(x + halfW + G, y); pasteBtn.size(halfW, H); y += H + G;
+
+  backupBtn.position(x, y); backupBtn.size(halfW, H);
+  restoreBtn.position(x + halfW + G, y); restoreBtn.size(halfW, H); y += H + G;
+
+  muteBtn.position(x, y); muteBtn.size(W, H); y += H + G;
+
+  // Music: link (wide) + volume-icon toggle, with a volume slider underneath
+  const tW = 40;
+  musicLinkBtn.position(x, y); musicLinkBtn.size(W - tW - G, H);
+  musicToggleBtn.position(x + W - tW, y); musicToggleBtn.size(tW, H); y += H + G;
+  musicVolSlider.position(x, y); musicVolSlider.style("width", W + "px"); y += 26;
 
   // The link entry field pops up along the top of the aquarium.
   const ax = previewW + previewMargin * 2;
@@ -347,7 +369,10 @@ async function startYouTubeMusic(url) {
       videoId: id,
       playerVars: { autoplay: 1, controls: 0, loop: 1, playlist: id },
       events: {
-        onReady: (e) => { e.target.setVolume(60); e.target.playVideo(); ytPlaying = true; updateMusicToggle(); },
+        onReady: (e) => {
+          e.target.setVolume(musicVolSlider ? musicVolSlider.value() : 60);
+          e.target.playVideo(); ytPlaying = true; updateMusicToggle();
+        },
         onError: () => alert("That video can't be played here (it may block embedding). Try another link."),
       },
     });
@@ -363,7 +388,7 @@ function toggleYouTubeMusic() {
 }
 
 function updateMusicToggle() {
-  if (musicToggleBtn) musicToggleBtn.html(ytPlaying ? "🎵  Music On" : "🎵  Music Off");
+  if (musicToggleBtn) musicToggleBtn.html(ytPlaying ? "🔊" : "🔇");
 }
 
 // ============================ WEBCAM =====================================
@@ -526,12 +551,17 @@ function loadStaticImage(img) {
 
 function handlePaste(e) {
   if (appState !== "running") return;
-  const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-  for (const it of items) {
+  // If a text field is focused (e.g. the music link box), let it paste text.
+  const ae = document.activeElement;
+  if (ae && ae.tagName === "INPUT") return;
+  const dt = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
+  if (!dt) return;
+  for (const it of dt.items) {
     if (it.type.indexOf("image") === 0) {
       const blob = it.getAsFile();
       const url = URL.createObjectURL(blob);
       loadImage(url, (img) => { URL.revokeObjectURL(url); loadStaticImage(img); });
+      lastPasteMs = millis();
       e.preventDefault();
       return;
     }
@@ -554,6 +584,7 @@ async function pasteFromClipboard() {
         const blob = await item.getType(type);
         const url = URL.createObjectURL(blob);
         loadImage(url, (img) => { URL.revokeObjectURL(url); loadStaticImage(img); });
+        lastPasteMs = millis();
         return;
       }
     }
@@ -817,12 +848,16 @@ function drawHint(x, y, glyph, label) {
 }
 
 // ============================ INPUT ======================================
-function mousePressed()  { return pressAt(mouseX, mouseY); }
+// Note: these intentionally don't return false. Returning false makes p5
+// preventDefault() the pointer event, which blocks the browser from focusing
+// text fields (the music link box) and from delivering Ctrl+V paste events.
+// Scroll/long-press suppression is handled by CSS + the contextmenu listener.
+function mousePressed()  { pressAt(mouseX, mouseY); }
 function mouseReleased() { releasePress(); }
-function mouseDragged()  { return moveAt(mouseX, mouseY); }
-function touchStarted()  { return pressAt(mouseX, mouseY); }
+function mouseDragged()  { moveAt(mouseX, mouseY); }
+function touchStarted()  { pressAt(mouseX, mouseY); }
 function touchEnded()    { releasePress(); }
-function touchMoved()    { return moveAt(mouseX, mouseY); }
+function touchMoved()    { moveAt(mouseX, mouseY); }
 
 function pressAt(gx, gy) {
   if (appState === "intro") { startApp(); return false; }
@@ -911,7 +946,15 @@ function keyPressed() {
   // Ignore keys while typing in a text field (e.g. the music link box).
   const ae = document.activeElement;
   if (ae && ae.tagName === "INPUT") return;
-  if (appState === "running" && key === " ") captureFish();
+  if (appState !== "running") return;
+  if (key === " ") { captureFish(); return; }
+
+  // Ctrl/Cmd + V: if the browser's own paste event doesn't fire (e.g. focus is
+  // on a button), fall back to the clipboard API shortly after.
+  const cmd = keyIsDown(CONTROL) || keyIsDown(91) || keyIsDown(93);
+  if (cmd && (key === "v" || key === "V")) {
+    setTimeout(() => { if (millis() - lastPasteMs > 250) pasteFromClipboard(); }, 150);
+  }
 }
 
 function windowResized() {
