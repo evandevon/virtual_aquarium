@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM   —   v1.2
+   CLASSROOM AQUARIUM   —   v1.3
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.2";
+const VERSION = "v1.3";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -38,9 +38,20 @@ const GROW_PER_FEED = 1.08;    // size step per flake eaten
 const FEED_MAX = 2.0;          // feeding tops out at 2x adult size
 
 // ---- Size / growing up ----
-const FISH_START_SCALE = 0.8;  // adult size of brand-new (scanned) fish
+const FISH_START_SCALE = 1.2;  // adult size of brand-new (scanned) fish
 const BABY_START = 0.35;       // a baby starts at this fraction of adult size
 const MATURE_FRAMES = 60 * 90; // ~90s for a baby to grow up
+
+// ---- Movement feel ----
+const PITCH_WANDER = 0.26;     // max gentle up/down lean while drifting (radians)
+const PITCH_SEEK = 0.7;        // steeper lean allowed when chasing food / hiding
+const TURN_MIN_FRAMES = 360;   // a drifting fish considers turning around this often
+const TURN_MAX_FRAMES = 780;
+const TURN_CHANCE = 0.5;       // ...and only actually turns this fraction of the time
+
+// ---- Bubbles ----
+const BUBBLE_SPAWN_EVERY = 24; // frames between bubbles (higher = fewer bubbles)
+const BUBBLE_SPEED_SCALE = 0.7; // rise speed multiplier (lower = slower)
 
 // ---- Reproduction & gentle thinning (calm, not fed-triggered) ----
 const SOFT_TARGET = 16;        // tank drifts toward this many fish
@@ -801,8 +812,8 @@ function drawAquarium() {
   // Shark scheduling
   if (!shark && millis() > nextSharkMs) shark = new Shark(a);
 
-  // Ambient rising bubbles spawn from the bottom
-  if (frameCount % 12 === 0) {
+  // Ambient rising bubbles spawn from the bottom (fewer now: see BUBBLE_SPAWN_EVERY)
+  if (frameCount % BUBBLE_SPAWN_EVERY === 0) {
     bubbles.push(new Bubble(random(0, a.w), a.h + 20, random(14, 38)));
   }
   for (let i = bubbles.length - 1; i >= 0; i--) {
@@ -1021,13 +1032,6 @@ function windowResized() {
 }
 
 // ============================ FISH =======================================
-function easeAngle(cur, target, amt) {
-  let d = target - cur;
-  while (d > PI) d -= TWO_PI;
-  while (d < -PI) d += TWO_PI;
-  return cur + d * amt;
-}
-
 class Fish {
   constructor(img, a, opts = {}) {
     this.id = ++fishSeq;
@@ -1045,7 +1049,11 @@ class Fish {
 
     this.x = opts.x != null ? opts.x : random(this.w, a.w - this.w);
     this.y = opts.y != null ? opts.y : random(a.margin + this.h, a.h - a.margin - this.h);
-    this.heading = random(TWO_PI);
+    this.dir = random() < 0.5 ? -1 : 1;       // horizontal travel direction
+    this.pitch = 0;                            // gentle vertical lean
+    this.pitchTarget = 0;
+    this.heading = this.dir > 0 ? 0 : PI;      // derived for drawing
+    this.turnTimer = random(TURN_MIN_FRAMES, TURN_MAX_FRAMES);
     this.baseSpeed = random(0.3, 0.85);       // gentle
     this.speedMult = 1;
     this.nSeed = random(1000);
@@ -1083,7 +1091,15 @@ class Fish {
     this.satiated = random(SATIATED_FRAMES * 0.8, SATIATED_FRAMES * 1.4);
   }
 
-  flip() { this.heading += PI; }
+  flip() { this.dir *= -1; }
+
+  // Steer toward a point: pick a horizontal direction (with hysteresis so it
+  // doesn't flicker) and a clamped vertical lean.
+  _steerTo(tx, ty, clampP) {
+    const dx = tx - this.x, dy = ty - this.y;
+    if (dx > 30) this.dir = 1; else if (dx < -30) this.dir = -1;
+    this.pitchTarget = constrain(Math.atan2(dy, Math.max(40, Math.abs(dx))), -clampP, clampP);
+  }
 
   // A calm reaction: drift toward the nearest shelter and tuck in.
   flee() {
@@ -1100,8 +1116,7 @@ class Fish {
 
   startLeaving(a) {
     this.state = "leaving";
-    // head for the nearer side, then fade out
-    this.heading = this.x < a.w / 2 ? PI : 0;
+    this.dir = this.x < a.w / 2 ? -1 : 1; // head for the nearer side
     this.alphaTarget = 0;
   }
 
@@ -1124,28 +1139,26 @@ class Fish {
     let targetSpeed = this.baseSpeed;
 
     if (this.state === "leaving") {
-      // Calmly swim off the edge; removed once faded / off-screen.
-      targetSpeed = this.baseSpeed * 1.4;
+      targetSpeed = this.baseSpeed * 1.5;
+      this.pitchTarget = 0;
       if (this.alpha < 0.04 || this.x < -120 || this.x > a.w + 120) this.gone = true;
 
     } else if (this.state === "flee") {
       if (--this.timer <= 0) this.state = "wander";
-      const dx = this.hideX - this.x, dy = this.hideY - this.y;
-      this.heading = easeAngle(this.heading, Math.atan2(dy, dx), 0.05); // slow, calm turn
-      targetSpeed = Math.hypot(dx, dy) > 60 ? this.baseSpeed * 1.8 : this.baseSpeed * 0.2;
+      this._steerTo(this.hideX, this.hideY, PITCH_SEEK);
+      targetSpeed = Math.hypot(this.hideX - this.x, this.hideY - this.y) > 60 ? this.baseSpeed * 1.8 : this.baseSpeed * 0.2;
 
     } else if (this.parent && this.parentAlive) {
       // Baby trails behind its parent, lagging so it stays visible.
       const p = this.parent;
       this.depthTarget = p.depth; // swim together at the same depth
-      const tx = p.x - Math.cos(p.heading) * TRAIL_DIST;
-      const ty = p.y - Math.sin(p.heading) * TRAIL_DIST;
-      const dx = tx - this.x, dy = ty - this.y, dd = Math.hypot(dx, dy);
-      this.heading = easeAngle(this.heading, Math.atan2(dy, dx), 0.06);
+      const tx = p.x - p.dir * TRAIL_DIST, ty = p.y;
+      const dd = Math.hypot(tx - this.x, ty - this.y);
+      this._steerTo(tx, ty, PITCH_SEEK);
       targetSpeed = constrain(map(dd, 0, 140, this.baseSpeed * 0.2, this.baseSpeed * 1.7), 0, this.baseSpeed * 1.7);
 
     } else {
-      // Look for food (unless recently fed), else wander organically.
+      // Look for food (unless recently fed), else drift calmly.
       let target = null, best = SEEK_RADIUS * SEEK_RADIUS;
       if (food && this.satiated <= 0) {
         for (const fl of food) {
@@ -1156,39 +1169,44 @@ class Fish {
       }
       if (target) {
         this.state = "seek";
+        this._steerTo(target.x, target.y, PITCH_SEEK);
+        targetSpeed = this.baseSpeed * 1.5;
         const dx = target.x - this.x, dy = target.y - this.y;
-        this.heading = easeAngle(this.heading, Math.atan2(dy, dx), 0.08);
-        targetSpeed = this.baseSpeed * 1.6;
         if (Math.abs(dx) < this.w * 0.5 && Math.abs(dy) < this.h * 0.6 && !target.eaten) {
           target.eaten = true; this.eat();
         }
       } else {
         this.state = "wander";
-        // gentle meander via Perlin noise
-        this.heading += (noise(this.nSeed, frameCount * 0.005) - 0.5) * 0.06;
+        // Mostly drift sideways; rarely (and calmly) turn around.
+        if (--this.turnTimer <= 0) {
+          this.turnTimer = random(TURN_MIN_FRAMES, TURN_MAX_FRAMES);
+          if (random() < TURN_CHANCE) this.dir *= -1;
+        }
+        // Gentle vertical lean that eases up and down over time.
+        this.pitchTarget = (noise(this.nSeed, frameCount * 0.004) - 0.5) * 2 * PITCH_WANDER;
       }
     }
 
-    // Soft edge avoidance (turn away from walls instead of bouncing)
+    // Edges: turn away from side walls; lean back in from top/bottom.
     if (this.state !== "leaving") {
-      const m = 70;
-      let ix = 0, iy = 0;
-      if (this.x < m) ix += (m - this.x) / m;
-      else if (this.x > a.w - m) ix -= (this.x - (a.w - m)) / m;
+      const m = 80;
+      if (this.x < m && this.dir < 0) this.dir = 1;
+      else if (this.x > a.w - m && this.dir > 0) this.dir = -1;
       const topM = a.margin + this.h, botM = a.h - a.margin - this.h;
-      if (this.y < topM) iy += (topM - this.y) / Math.max(1, topM);
-      else if (this.y > botM) iy -= (this.y - botM) / Math.max(1, a.h - botM);
-      if (ix || iy) this.heading = easeAngle(this.heading, Math.atan2(iy, ix), 0.08 * Math.min(1, Math.hypot(ix, iy)));
+      if (this.y < topM) this.pitchTarget = Math.max(this.pitchTarget, 0.45);   // head down
+      else if (this.y > botM) this.pitchTarget = Math.min(this.pitchTarget, -0.45); // head up
     }
 
-    // Far fish move a little slower (parallax calm)
+    this.pitch += (this.pitchTarget - this.pitch) * 0.04;
+    this.heading = Math.atan2(Math.sin(this.pitch), this.dir * Math.cos(this.pitch)); // for drawing
+
+    // Integrate (mostly horizontal; far fish a touch slower for parallax)
     const depthSpeed = lerp(1, 0.6, this.depth);
     this.speedMult += (targetSpeed - this.speedMult) * 0.05;
     const v = this.speedMult * depthSpeed;
-    this.x += Math.cos(this.heading) * v;
-    this.y += Math.sin(this.heading) * v;
+    this.x += this.dir * v * Math.cos(this.pitch);
+    this.y += v * Math.sin(this.pitch);
 
-    // Hard safety clamp (avoidance normally keeps them inside)
     this.x = constrain(this.x, -150, a.w + 150);
     if (this.state !== "leaving") this.y = constrain(this.y, this.h / 2, a.h - this.h / 2);
   }
@@ -1258,7 +1276,8 @@ function drawBubble(x, y, d, alphaMul = 1) {
 class Bubble {
   constructor(x, y, d) {
     this.x = x; this.y = y; this.d = d;
-    this.baseX = x; this.phase = random(TWO_PI); this.speed = random(1, 2);
+    this.baseX = x; this.phase = random(TWO_PI);
+    this.speed = random(1, 2) * BUBBLE_SPEED_SCALE;
   }
   update() { this.y -= this.speed; this.phase += 0.1; this.x = this.baseX + Math.sin(this.phase) * 5; }
   draw() { drawBubble(this.x, this.y, this.d); }
