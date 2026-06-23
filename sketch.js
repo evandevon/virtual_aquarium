@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM   —   v1.1
+   CLASSROOM AQUARIUM   —   v1.2
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.1";
+const VERSION = "v1.2";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -26,33 +26,44 @@ const MAX_FISH_IMG_EDGE = 140; // stored image longest edge, px
 const LONG_PRESS_MS = 550;     // hold this long to delete a caught fish
 const HIT_INFLATE = 1.25;      // forgiving touch box
 
-// ---- Water gestures (scare / feed) ----
+// ---- Feeding ----
 const MOVE_THRESH = 16;        // px of movement that turns a press into a drag
 const FOOD_HOLD_MS = 700;      // stationary hold on water before food drops
 const FOOD_BURST = 6;          // flakes dropped the moment feeding starts
 const FOOD_TRICKLE_EVERY = 10; // frames between trickle flakes while holding
 const FOOD_MAX = 60;           // total flakes alive at once (perf cap)
-const SCARE_RADIUS = 130;      // how far a tap/swipe scare reaches
-const SCARE_FRAMES = 90;       // ~1.5s flee at 60fps
 const SEEK_RADIUS = 150;       // how far a fish notices food
+const SATIATED_FRAMES = 300;   // ~5s a fish ignores food after a bite
+const GROW_PER_FEED = 1.08;    // size step per flake eaten
+const FEED_MAX = 2.0;          // feeding tops out at 2x adult size
 
-// ---- Growth & cloning ----
-const FISH_CAP = 80;           // cloning pauses at this many fish (raise to taste)
-const GROWTH_PER_FEED = 1.1;   // x1.1 size each flake eaten
-const GROWTH_CAP = 2.5;        // max multiple of starting size
-const CLONE_EVERY = 3;         // an original spawns a clone every N feeds
-const CLONE_SCALE = 0.4;       // clone starts at 40% of parent's current size
-const SATIATED_FRAMES = 300;   // ~5s a fish ignores food after a bite (slows growth, shares food)
-const FISH_START_SCALE = 0.8;  // size of brand-new fish (1 = old size; lower = smaller)
+// ---- Size / growing up ----
+const FISH_START_SCALE = 0.8;  // adult size of brand-new (scanned) fish
+const BABY_START = 0.35;       // a baby starts at this fraction of adult size
+const MATURE_FRAMES = 60 * 90; // ~90s for a baby to grow up
 
-// ---- Shark ---- (easy to tweak)
+// ---- Reproduction & gentle thinning (calm, not fed-triggered) ----
+const SOFT_TARGET = 16;        // tank drifts toward this many fish
+const REPRO_MIN_MS = 60 * 1000;   // a baby appears somewhere every 1–2.5 min
+const REPRO_MAX_MS = 150 * 1000;
+const TRAIL_DIST = 75;         // how far a baby lags behind its parent
+
+// ---- Depth (parallax layers) ----
+const DEPTH_LAYERS = 10;       // number of depth bands
+const DEPTH_BACK_SCALE = 0.55; // size of the furthest fish vs nearest
+const DEPTH_BACK_FADE = 150;   // alpha of the furthest fish (0–255)
+
+// ---- Shark (calm visitor) ----
 const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
-const SHARK_SCARE_RADIUS = 450;          // fish notice & flee within this of the shark
-const SHARK_SPEED = 1.15;                // px/frame (lower = slower)
+const SHARK_SCARE_RADIUS = 650;          // fish notice it from far away
+const SHARK_SPEED = 0.8;                 // px/frame (slow, unhurried)
 const SHARK_SCALE = 1.5;                 // overall shark size multiplier
 
+// ---- Idle display mode ----
+const IDLE_MS = 150 * 1000;    // hide the UI after this long with no interaction
+
 // ---- Foreground rocks & coral ----
-const FOREGROUND_SCALE = 1.5;            // size of the rocks/coral clusters
+const FOREGROUND_SCALE = 1.5;  // size of the rocks/coral clusters
 
 let appState = "intro";        // "intro" | "running"
 
@@ -79,11 +90,16 @@ let fishArray = [];
 let bubbles = [];
 let popBubbles = [];
 let food = [];                 // sinking flakes
-let pendingClones = [];        // clone requests collected during a frame
 let shark = null;
 let nextSharkMs = Infinity;
+let nextReproMs = Infinity;     // next random baby
+let fishSeq = 0;                // ever-increasing id, for "oldest" thinning
 let shelters = [];             // procedural foreground rocks/coral
 let bubbleSprite = null;       // cached soft-bubble image (perf)
+
+// Idle display mode
+let idle = false;
+let lastActivityMs = 0;
 
 // Preview transform applied before capture (rotate-right / flip H / flip V)
 let previewTransform = { rot: 0, flipH: false, flipV: false };
@@ -165,6 +181,26 @@ function startApp() {
 
   buildForeground(aquarium());          // procedural rocks/coral, unique each load
   nextSharkMs = millis() + SHARK_INTERVAL_MS;
+  nextReproMs = millis() + random(REPRO_MIN_MS, REPRO_MAX_MS);
+  lastActivityMs = millis();
+}
+
+// Idle display mode: hide the UI and let the tank fill the screen.
+function wake() {
+  lastActivityMs = millis();
+  if (idle) setIdle(false);
+}
+
+function setIdle(state) {
+  if (idle === state || appState !== "running") return;
+  const oldW = aquarium().w;
+  idle = state;
+  const newW = aquarium().w;
+  const fx = newW / oldW;
+  for (const f of fishArray) { f.x *= fx; f.hideX *= fx; } // keep relative positions
+  buildForeground(aquarium());
+  showControls(!state);
+  if (!state) layoutControls();
 }
 
 // ============================ CONTROLS ===================================
@@ -663,7 +699,10 @@ function draw() {
   background("#02131c");
   if (appState === "intro") { drawIntro(); return; }
 
-  drawLeftColumn();
+  // Enter idle (pure display) after a quiet spell
+  if (!idle && millis() - lastActivityMs > IDLE_MS) setIdle(true);
+
+  if (!idle) drawLeftColumn();
   drawAquarium();
   handleHeldGesture();
 }
@@ -735,18 +774,17 @@ function drawLeftColumn() {
     "• Or paste (Ctrl/Cmd-V) or Upload an image.",
     "• Tap a fish to turn it around.",
     "• Hold a fish to remove it.",
-    "• Tap or swipe the water to scare them.",
     "• Hold still on the water to drop food;",
-    "   fish grow as they eat (and may clone!).",
+    "   fish grow a little as they eat.",
   ];
   for (const ln of lines) { text(ln, previewMargin, ty); ty += 17; }
 }
 
 function aquarium() {
-  const x0 = previewW + previewMargin * 2;
+  const x0 = idle ? 0 : previewW + previewMargin * 2;
   return {
     x0,
-    w: width - x0 - previewMargin,
+    w: width - x0 - (idle ? 0 : previewMargin),
     h: height,
     margin: 24,
   };
@@ -779,27 +817,34 @@ function drawAquarium() {
     if (food[i].eaten || food[i].offScreen(a)) food.splice(i, 1);
   }
 
-  // A nearby shark keeps fish fleeing/hiding
+  // A nearby shark makes fish calmly seek cover
   if (shark) {
     for (const f of fishArray) {
-      if (!f.caught && dist(f.x, f.y, shark.x, shark.y) < SHARK_SCARE_RADIUS) f.flee(shark.x, shark.y);
+      if (!f.caught && f.state !== "leaving" && dist(f.x, f.y, shark.x, shark.y) < SHARK_SCARE_RADIUS) f.flee();
     }
   }
 
-  // Fish (clones requested during update are added afterwards)
-  pendingClones.length = 0;
-  for (const f of fishArray) { f.update(a, food); f.draw(); }
-  for (const parent of pendingClones) {
-    if (fishArray.length >= FISH_CAP) break;
-    fishArray.push(new Fish(parent.img, a, {
-      isClone: true,
-      baseLongest: parent.baseLongest * parent.growth * CLONE_SCALE,
-      x: parent.x + random(-30, 30),
-      y: parent.y + random(-20, 20),
-    }));
-    playSplash();
+  // Rare, random reproduction (not tied to feeding)
+  if (millis() > nextReproMs) {
+    const eligible = fishArray.filter(canReproduce);
+    if (eligible.length) spawnBaby(random(eligible), a);
+    nextReproMs = millis() + random(REPRO_MIN_MS, REPRO_MAX_MS);
   }
-  pendingClones.length = 0;
+
+  // Gentle self-thinning: if crowded, the oldest fish that has had a baby
+  // calmly swims off and is retired.
+  if (fishArray.length > SOFT_TARGET && !fishArray.some((f) => f.state === "leaving")) {
+    const parents = fishArray.filter((f) => f.hasBaby).sort((p, q) => p.id - q.id);
+    if (parents.length) parents[0].startLeaving(a);
+  }
+
+  // Update everyone, then remove any that have finished leaving
+  for (const f of fishArray) f.update(a, food);
+  for (let i = fishArray.length - 1; i >= 0; i--) if (fishArray[i].gone) removeFish(fishArray[i]);
+
+  // Draw back-to-front for depth (far fish first)
+  const drawList = fishArray.slice().sort((p, q) => q.depth - p.depth);
+  for (const f of drawList) f.draw();
 
   // Shark (drawn over fish, but behind the foreground so it can hide too)
   if (shark) {
@@ -818,6 +863,36 @@ function drawAquarium() {
   }
 
   pop();
+}
+
+// A fish may have a baby if it's fully grown, hasn't already, the tank isn't
+// crowded, and — if it's itself a baby — its own parent has died.
+function canReproduce(f) {
+  return f.isMature() && !f.hasBaby && f.state !== "leaving" &&
+         (!f.isBaby || !f.parentAlive) && fishArray.length < SOFT_TARGET;
+}
+
+function spawnBaby(parent, a) {
+  parent.hasBaby = true;
+  fishArray.push(new Fish(parent.img, a, {
+    isBaby: true,
+    parent,
+    baseLongest: parent.baseLongest,        // grows up to the parent's adult size
+    depth: parent.depth,
+    x: parent.x - Math.cos(parent.heading) * TRAIL_DIST,
+    y: parent.y - Math.sin(parent.heading) * TRAIL_DIST,
+  }));
+  playSplash();
+}
+
+// Remove a fish and free any baby that was depending on it as a living parent.
+function removeFish(f) {
+  const idx = fishArray.indexOf(f);
+  if (idx === -1) return;
+  fishArray.splice(idx, 1);
+  for (const other of fishArray) {
+    if (other.parent === f) { other.parent = null; other.parentAlive = false; }
+  }
 }
 
 // ============================ INTRO ======================================
@@ -852,22 +927,24 @@ function drawHint(x, y, glyph, label) {
 // preventDefault() the pointer event, which blocks the browser from focusing
 // text fields (the music link box) and from delivering Ctrl+V paste events.
 // Scroll/long-press suppression is handled by CSS + the contextmenu listener.
-function mousePressed()  { pressAt(mouseX, mouseY); }
+function mousePressed()  { wake(); pressAt(mouseX, mouseY); }
 function mouseReleased() { releasePress(); }
-function mouseDragged()  { moveAt(mouseX, mouseY); }
-function touchStarted()  { pressAt(mouseX, mouseY); }
+function mouseDragged()  { wake(); moveAt(mouseX, mouseY); }
+function mouseMoved()    { wake(); }
+function touchStarted()  { wake(); pressAt(mouseX, mouseY); }
 function touchEnded()    { releasePress(); }
-function touchMoved()    { moveAt(mouseX, mouseY); }
+function touchMoved()    { wake(); moveAt(mouseX, mouseY); }
 
 function pressAt(gx, gy) {
-  if (appState === "intro") { startApp(); return false; }
+  if (appState === "intro") { startApp(); return; }
+  if (idle) return; // a wake tap just brings the UI back; don't also act
 
   // Tap the webcam preview to cancel a loaded image and go back to live.
   if (gx > previewMargin && gx < previewMargin + previewW &&
       gy > previewMargin && gy < previewMargin + previewH) {
     previewMode = "live";
     previewTransform = { rot: 0, flipH: false, flipV: false };
-    return false;
+    return;
   }
 
   const a = aquarium();
@@ -880,52 +957,30 @@ function pressAt(gx, gy) {
       fishArray[i].caught = true;
       press = { kind: "fish", startMs: millis(), x: lx, y: ly,
                 moved: false, fired: false, fish: fishArray[i] };
-      return false;
+      return;
     }
   }
 
-  // Press on open water -> wait to see: tap/drag = scare, still hold = feed.
+  // Press on open water -> hold still to drop food. (A tap does nothing.)
   press = { kind: "water", startMs: millis(), x: lx, y: ly,
             moved: false, fed: false, fish: null };
-  return false;
 }
 
 function moveAt(gx, gy) {
   if (!press) return;
-  // Once feeding has begun, small drift shouldn't turn it into a scare.
-  if (press.kind === "water" && press.fed) return false;
-
+  if (press.kind === "water" && press.fed) return; // keep feeding through small drift
   const a = aquarium();
   const lx = gx - a.x0, ly = gy;
   if (!press.moved && dist(lx, ly, press.x, press.y) > MOVE_THRESH) press.moved = true;
-
-  if (press.kind === "water" && press.moved) {
-    // Swiping across water scares fish along the path.
-    scareAt(lx, ly);
-  }
-  return false; // prevent page scroll on touch
 }
 
 function releasePress() {
   if (!press) return;
-
-  if (press.kind === "fish") {
-    if (press.fish && !press.fired) {
-      press.fish.flip();          // quick release = turn around
-      press.fish.caught = false;
-    }
-  } else if (press.kind === "water") {
-    // A still, quick tap (never moved, never fed) is a scare.
-    if (!press.moved && !press.fed) scareAt(press.x, press.y);
+  if (press.kind === "fish" && press.fish && !press.fired) {
+    press.fish.flip();          // quick release = turn around
+    press.fish.caught = false;
   }
   press = null;
-}
-
-function scareAt(lx, ly) {
-  for (const f of fishArray) {
-    if (f.caught) continue;
-    if (dist(f.x, f.y, lx, ly) < SCARE_RADIUS) f.flee(lx, ly);
-  }
 }
 
 function dropFood(lx, ly, n) {
@@ -935,14 +990,17 @@ function dropFood(lx, ly, n) {
 }
 
 function deleteFish(f) {
-  const idx = fishArray.indexOf(f);
-  if (idx === -1) return;
-  fishArray.splice(idx, 1);
+  popPlayAt(f.x, f.y);
+  removeFish(f);
+}
+
+function popPlayAt(x, y) {
   playPop();
-  for (let i = 0; i < 10; i++) popBubbles.push(new PopBubble(f.x, f.y));
+  for (let i = 0; i < 10; i++) popBubbles.push(new PopBubble(x, y));
 }
 
 function keyPressed() {
+  wake();
   // Ignore keys while typing in a text field (e.g. the music link box).
   const ae = document.activeElement;
   if (ae && ae.tagName === "INPUT") return;
@@ -963,38 +1021,54 @@ function windowResized() {
 }
 
 // ============================ FISH =======================================
+function easeAngle(cur, target, amt) {
+  let d = target - cur;
+  while (d > PI) d -= TWO_PI;
+  while (d < -PI) d += TWO_PI;
+  return cur + d * amt;
+}
+
 class Fish {
   constructor(img, a, opts = {}) {
-    this.img = img;                       // clones share their parent's image
-    this.isClone = !!opts.isClone;
-    this.baseLongest = opts.baseLongest != null
-      ? opts.baseLongest                       // clones inherit an already-scaled size
-      : random(85, 125) * FISH_START_SCALE;    // new fish use the start scale
-    this.growth = 1;
-    this.feeds = 0;
+    this.id = ++fishSeq;
+    this.img = img;                          // babies share the parent's image
+    this.isBaby = !!opts.isBaby;
+    this.parent = opts.parent || null;       // the fish this baby trails
+    this.parentAlive = !!this.parent;
+    this.hasBaby = false;                     // has this fish reproduced yet?
+
+    this.baseLongest = opts.baseLongest != null ? opts.baseLongest
+                                               : random(85, 125) * FISH_START_SCALE;
+    this.maturity = this.isBaby ? 0 : 1;      // 0 = newborn, 1 = full adult size
+    this.fed = 1;                             // feeding multiplier, up to FEED_MAX
     this._setSize();
 
     this.x = opts.x != null ? opts.x : random(this.w, a.w - this.w);
     this.y = opts.y != null ? opts.y : random(a.margin + this.h, a.h - a.margin - this.h);
-    this.dir = random() < 0.5 ? -1 : 1;
-    this.baseSpeed = random(0.35, 1.1);
+    this.heading = random(TWO_PI);
+    this.baseSpeed = random(0.3, 0.85);       // gentle
     this.speedMult = 1;
-    this.speedMultTarget = 1;
-    this.vy = 0;
-    this.tiltDir = 1;
+    this.nSeed = random(1000);
     this.swayTime = random(TWO_PI);
-    this.state = "cruise";
-    this.timer = random(90, 220);
-    this.caught = false;
-    this.fleeVy = 0;
-    this.seekVy = 0;
     this.satiated = 0;
-    this.hideX = 0;
-    this.hideY = 0;
+    this.caught = false;
+    this.state = "wander";                    // wander | seek | flee | leaving
+    this.timer = 0;
+
+    // Depth (parallax). Continuous 0 (front) .. 1 (back), eased toward a target.
+    this.depth = opts.depth != null ? opts.depth : floor(random(DEPTH_LAYERS)) / (DEPTH_LAYERS - 1);
+    this.depthTarget = this.depth;
+    this.depthTimer = random(360, 900);
+
+    this.hideX = 0; this.hideY = 0;
+    this.alpha = 0;                           // fade in
+    this.alphaTarget = 1;
+    this.gone = false;
   }
 
   _setSize() {
-    const longest = this.baseLongest * this.growth;
+    const matScale = lerp(BABY_START, 1, this.maturity);
+    const longest = this.baseLongest * matScale * this.fed;
     if (this.img.width >= this.img.height) {
       this.w = longest; this.h = longest * (this.img.height / this.img.width);
     } else {
@@ -1002,64 +1076,76 @@ class Fish {
     }
   }
 
-  // Eat a flake: grow, become briefly uninterested in food, and (originals
-  // only) clone every few feeds.
+  isMature() { return this.maturity >= 1; }
+
   eat() {
-    this.feeds++;
-    this.growth = Math.min(this.growth * GROWTH_PER_FEED, GROWTH_CAP);
-    this._setSize();
+    this.fed = Math.min(this.fed * GROW_PER_FEED, FEED_MAX);
     this.satiated = random(SATIATED_FRAMES * 0.8, SATIATED_FRAMES * 1.4);
-    if (!this.isClone && this.feeds % CLONE_EVERY === 0 && fishArray.length < FISH_CAP) {
-      pendingClones.push(this);
-    }
   }
 
-  pickState() {
-    const r = random();
-    if (r < 0.15) { this.state = "dart"; this.speedMultTarget = random(2.6, 4.2); this.timer = random(45, 90); }
-    else if (r < 0.35) { this.state = "tilt"; this.tiltDir = random() < 0.5 ? -1 : 1; this.timer = random(50, 100); }
-    else { this.state = "cruise"; this.speedMultTarget = 1; this.timer = random(120, 260); }
-  }
+  flip() { this.heading += PI; }
 
-  flip() { this.dir *= -1; }
-
-  // Scared: bolt for the nearest shelter (or just away if there are none).
-  flee(fx, fy) {
+  // A calm reaction: drift toward the nearest shelter and tuck in.
+  flee() {
     if (this.state !== "flee") {
       if (shelters.length) {
         let best = Infinity, sh = shelters[0];
-        for (const s of shelters) {
-          const d = Math.abs(s.hideX - this.x);
-          if (d < best) { best = d; sh = s; }
-        }
+        for (const s of shelters) { const d = Math.abs(s.hideX - this.x); if (d < best) { best = d; sh = s; } }
         this.hideX = sh.hideX; this.hideY = sh.hideY;
-      } else {
-        this.hideX = this.x + (this.x - fx >= 0 ? 1 : -1) * 280;
-        this.hideY = this.y;
-      }
+      } else { this.hideX = this.x; this.hideY = this.y; }
     }
     this.state = "flee";
-    this.timer = SCARE_FRAMES;
+    this.timer = 90;
+  }
+
+  startLeaving(a) {
+    this.state = "leaving";
+    // head for the nearer side, then fade out
+    this.heading = this.x < a.w / 2 ? PI : 0;
+    this.alphaTarget = 0;
   }
 
   update(a, food) {
-    this.swayTime += 0.05;
+    this.swayTime += 0.04;
+    if (this.maturity < 1) { this.maturity = Math.min(1, this.maturity + 1 / MATURE_FRAMES); }
+    this._setSize();
+    this.alpha += (this.alphaTarget - this.alpha) * 0.03;
+
+    // Depth drifts slowly toward a target layer (visible swim back/forward).
+    if (--this.depthTimer <= 0) {
+      this.depthTarget = floor(random(DEPTH_LAYERS)) / (DEPTH_LAYERS - 1);
+      this.depthTimer = random(360, 900);
+    }
+    this.depth += (this.depthTarget - this.depth) * 0.015;
+
     if (this.satiated > 0) this.satiated--;
-    if (this.caught) return; // frozen while held
+    if (this.caught) return;
 
-    let vyTarget = 0;
+    let targetSpeed = this.baseSpeed;
 
-    if (this.state === "flee") {
-      // Hiding overrides food. Dash to the shelter, then tuck in.
-      if (--this.timer <= 0) { this.state = "cruise"; this.speedMultTarget = 1; this.timer = random(60, 160); }
+    if (this.state === "leaving") {
+      // Calmly swim off the edge; removed once faded / off-screen.
+      targetSpeed = this.baseSpeed * 1.4;
+      if (this.alpha < 0.04 || this.x < -120 || this.x > a.w + 120) this.gone = true;
+
+    } else if (this.state === "flee") {
+      if (--this.timer <= 0) this.state = "wander";
       const dx = this.hideX - this.x, dy = this.hideY - this.y;
-      const distToHide = Math.hypot(dx, dy);
-      this.dir = dx >= 0 ? 1 : -1;
-      this.speedMultTarget = distToHide > 50 ? 4 : 0.15;
-      this.speedMult += (this.speedMultTarget - this.speedMult) * 0.12;
-      vyTarget = constrain(dy * 0.06, -this.baseSpeed * 3, this.baseSpeed * 3);
+      this.heading = easeAngle(this.heading, Math.atan2(dy, dx), 0.05); // slow, calm turn
+      targetSpeed = Math.hypot(dx, dy) > 60 ? this.baseSpeed * 1.8 : this.baseSpeed * 0.2;
+
+    } else if (this.parent && this.parentAlive) {
+      // Baby trails behind its parent, lagging so it stays visible.
+      const p = this.parent;
+      this.depthTarget = p.depth; // swim together at the same depth
+      const tx = p.x - Math.cos(p.heading) * TRAIL_DIST;
+      const ty = p.y - Math.sin(p.heading) * TRAIL_DIST;
+      const dx = tx - this.x, dy = ty - this.y, dd = Math.hypot(dx, dy);
+      this.heading = easeAngle(this.heading, Math.atan2(dy, dx), 0.06);
+      targetSpeed = constrain(map(dd, 0, 140, this.baseSpeed * 0.2, this.baseSpeed * 1.7), 0, this.baseSpeed * 1.7);
+
     } else {
-      // Look for the nearest flake within range — unless recently fed.
+      // Look for food (unless recently fed), else wander organically.
       let target = null, best = SEEK_RADIUS * SEEK_RADIUS;
       if (food && this.satiated <= 0) {
         for (const fl of food) {
@@ -1068,62 +1154,70 @@ class Fish {
           if (d2 < best) { best = d2; target = fl; }
         }
       }
-
       if (target) {
-        // Steer toward the food and eat it on contact.
-        const dx = target.x - this.x, dy = target.y - this.y;
-        this.dir = dx >= 0 ? 1 : -1;
         this.state = "seek";
-        this.speedMult += (2.2 - this.speedMult) * 0.1;
-        vyTarget = constrain(dy * 0.06, -this.baseSpeed * 2.2, this.baseSpeed * 2.2);
-        this.seekVy = vyTarget;
-        if (Math.abs(dx) < this.w * 0.45 && Math.abs(dy) < this.h * 0.55 && !target.eaten) {
-          target.eaten = true;
-          this.eat();
+        const dx = target.x - this.x, dy = target.y - this.y;
+        this.heading = easeAngle(this.heading, Math.atan2(dy, dx), 0.08);
+        targetSpeed = this.baseSpeed * 1.6;
+        if (Math.abs(dx) < this.w * 0.5 && Math.abs(dy) < this.h * 0.6 && !target.eaten) {
+          target.eaten = true; this.eat();
         }
       } else {
-        if (this.state === "seek") { this.state = "cruise"; this.speedMultTarget = 1; this.timer = random(60, 160); }
-        if (--this.timer <= 0) this.pickState();
-        this.speedMult += (this.speedMultTarget - this.speedMult) * 0.08;
-        if (this.state === "tilt") vyTarget = this.tiltDir * this.baseSpeed * 1.2;
+        this.state = "wander";
+        // gentle meander via Perlin noise
+        this.heading += (noise(this.nSeed, frameCount * 0.005) - 0.5) * 0.06;
       }
     }
 
-    this.vy += (vyTarget - this.vy) * 0.08;
+    // Soft edge avoidance (turn away from walls instead of bouncing)
+    if (this.state !== "leaving") {
+      const m = 70;
+      let ix = 0, iy = 0;
+      if (this.x < m) ix += (m - this.x) / m;
+      else if (this.x > a.w - m) ix -= (this.x - (a.w - m)) / m;
+      const topM = a.margin + this.h, botM = a.h - a.margin - this.h;
+      if (this.y < topM) iy += (topM - this.y) / Math.max(1, topM);
+      else if (this.y > botM) iy -= (this.y - botM) / Math.max(1, a.h - botM);
+      if (ix || iy) this.heading = easeAngle(this.heading, Math.atan2(iy, ix), 0.08 * Math.min(1, Math.hypot(ix, iy)));
+    }
 
-    const vx = this.dir * this.baseSpeed * this.speedMult;
-    this.x += vx;
-    this.y += this.vy;
+    // Far fish move a little slower (parallax calm)
+    const depthSpeed = lerp(1, 0.6, this.depth);
+    this.speedMult += (targetSpeed - this.speedMult) * 0.05;
+    const v = this.speedMult * depthSpeed;
+    this.x += Math.cos(this.heading) * v;
+    this.y += Math.sin(this.heading) * v;
 
-    // Horizontal walls -> turn around
-    if (this.x < this.w / 2) { this.x = this.w / 2; this.dir = 1; }
-    else if (this.x > a.w - this.w / 2) { this.x = a.w - this.w / 2; this.dir = -1; }
-
-    // Vertical walls -> nudge back in
-    const top = a.margin + this.h / 2, bot = a.h - a.margin - this.h / 2;
-    if (this.y < top) { this.y = top; this.vy = Math.abs(this.vy); this.tiltDir = 1; }
-    else if (this.y > bot) { this.y = bot; this.vy = -Math.abs(this.vy); this.tiltDir = -1; }
+    // Hard safety clamp (avoidance normally keeps them inside)
+    this.x = constrain(this.x, -150, a.w + 150);
+    if (this.state !== "leaving") this.y = constrain(this.y, this.h / 2, a.h - this.h / 2);
   }
 
   draw() {
-    const vx = this.dir * this.baseSpeed * this.speedMult;
-    const heading = Math.atan2(this.vy, vx);
-    const sway = Math.sin(this.swayTime) * 3;
+    const ds = lerp(1, DEPTH_BACK_SCALE, this.depth);
+    const w = this.w * ds, h = this.h * ds;
+    const sway = Math.sin(this.swayTime) * 3 * ds;
+    // Colour grade increases with depth; front fish stay full-colour.
+    const r = lerp(255, 150, this.depth);
+    const g = lerp(255, 200, this.depth);
+    const b = lerp(255, 215, this.depth);
+    const a = lerp(255, DEPTH_BACK_FADE, this.depth) * constrain(this.alpha, 0, 1);
 
     push();
+    tint(r, g, b, a);
     translate(this.x, this.y + sway);
-    // Sprite art faces LEFT by default.
-    if (this.dir >= 0) { scale(-1, 1); rotate(-heading); }
-    else { rotate(heading + PI); }
+    if (Math.cos(this.heading) >= 0) { scale(-1, 1); rotate(-this.heading); }
+    else { rotate(this.heading + PI); }
     imageMode(CENTER);
-    image(this.img, 0, 0, this.w, this.h);
+    image(this.img, 0, 0, w, h);
     pop();
   }
 
   hit(lx, ly) {
-    const hw = (this.w / 2) * HIT_INFLATE;
-    const hh = (this.h / 2) * HIT_INFLATE;
-    const sway = Math.sin(this.swayTime) * 3;
+    const ds = lerp(1, DEPTH_BACK_SCALE, this.depth);
+    const hw = (this.w * ds / 2) * HIT_INFLATE;
+    const hh = (this.h * ds / 2) * HIT_INFLATE;
+    const sway = Math.sin(this.swayTime) * 3 * ds;
     return lx > this.x - hw && lx < this.x + hw &&
            ly > this.y + sway - hh && ly < this.y + sway + hh;
   }
