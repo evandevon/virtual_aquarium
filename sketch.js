@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM   —   v1.3
+   CLASSROOM AQUARIUM   —   v1.4
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.3";
+const VERSION = "v1.4";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -43,11 +43,27 @@ const BABY_START = 0.35;       // a baby starts at this fraction of adult size
 const MATURE_FRAMES = 60 * 90; // ~90s for a baby to grow up
 
 // ---- Movement feel ----
-const PITCH_WANDER = 0.26;     // max gentle up/down lean while drifting (radians)
+const TURN_EASE = 0.05;        // how softly fish arc when turning (higher = quicker)
+const LEAN_WANDER = 0.14;      // gentle baseline up/down lean while drifting (radians)
+const LEAN_EDGE = 0.45;        // lean used to steer away from top/bottom
 const PITCH_SEEK = 0.7;        // steeper lean allowed when chasing food / hiding
-const TURN_MIN_FRAMES = 360;   // a drifting fish considers turning around this often
-const TURN_MAX_FRAMES = 780;
-const TURN_CHANCE = 0.5;       // ...and only actually turns this fraction of the time
+const SIDE_MARGIN = 130;       // how early a fish starts its turn near a side wall
+const TURN_MIN_FRAMES = 420;   // a drifting fish considers a plain turn this often
+const TURN_MAX_FRAMES = 900;
+const TURN_CHANCE = 0.35;
+
+// ---- Flourishes (brief random moves; only a couple happen at once) ----
+const MAX_FLOURISH = 2;        // max fish doing a flourish at the same time
+const FLOURISH_CHECK = 90;     // frames between "should someone flourish?" checks
+const FLOURISH_CHANCE = 0.5;   // chance to start one when below the cap
+const FLOURISH_MIN = 150;      // duration range for timed flourishes (frames)
+const FLOURISH_MAX = 320;
+const LEAN_STRONG = 0.5;       // steep lean for rise/dive flourishes
+const LOOP_SPEED = 0.045;      // radians/frame for the loop flourish
+
+// ---- Feeding focus ----
+const FRONT_EAT_DEPTH = 0.15;  // a fish must be this close to the front to eat
+const SEEK_DEPTH_EASE = 0.03;  // how quickly an attracted fish comes forward
 
 // ---- Bubbles ----
 const BUBBLE_SPAWN_EVERY = 24; // frames between bubbles (higher = fewer bubbles)
@@ -849,6 +865,15 @@ function drawAquarium() {
     if (parents.length) parents[0].startLeaving(a);
   }
 
+  // Occasionally let a fish do something special — but only a couple at a time.
+  if (frameCount % FLOURISH_CHECK === 0) {
+    const active = fishArray.reduce((n, f) => n + (f.flour ? 1 : 0), 0);
+    if (active < MAX_FLOURISH && random() < FLOURISH_CHANCE) {
+      const pool = fishArray.filter((f) => !f.flour && !f.caught && f.state === "wander" && !(f.parent && f.parentAlive));
+      if (pool.length) random(pool).startFlourish();
+    }
+  }
+
   // Update everyone, then remove any that have finished leaving
   for (const f of fishArray) f.update(a, food);
   for (let i = fishArray.length - 1; i >= 0; i--) if (fishArray[i].gone) removeFish(fishArray[i]);
@@ -1049,10 +1074,11 @@ class Fish {
 
     this.x = opts.x != null ? opts.x : random(this.w, a.w - this.w);
     this.y = opts.y != null ? opts.y : random(a.margin + this.h, a.h - a.margin - this.h);
-    this.dir = random() < 0.5 ? -1 : 1;       // horizontal travel direction
+    this.dir = random() < 0.5 ? -1 : 1;       // intended horizontal direction (±1)
+    this.face = this.dir;                      // continuous facing, eases toward dir (soft turns)
     this.pitch = 0;                            // gentle vertical lean
     this.pitchTarget = 0;
-    this.heading = this.dir > 0 ? 0 : PI;      // derived for drawing
+    this.flour = null;                         // current flourish (brief special move)
     this.turnTimer = random(TURN_MIN_FRAMES, TURN_MAX_FRAMES);
     this.baseSpeed = random(0.3, 0.85);       // gentle
     this.speedMult = 1;
@@ -1091,9 +1117,9 @@ class Fish {
     this.satiated = random(SATIATED_FRAMES * 0.8, SATIATED_FRAMES * 1.4);
   }
 
-  flip() { this.dir *= -1; }
+  flip() { this.dir *= -1; }   // face eases across -> soft turn
 
-  // Steer toward a point: pick a horizontal direction (with hysteresis so it
+  // Steer toward a point: choose a horizontal direction (with a deadzone so it
   // doesn't flicker) and a clamped vertical lean.
   _steerTo(tx, ty, clampP) {
     const dx = tx - this.x, dy = ty - this.y;
@@ -1101,7 +1127,6 @@ class Fish {
     this.pitchTarget = constrain(Math.atan2(dy, Math.max(40, Math.abs(dx))), -clampP, clampP);
   }
 
-  // A calm reaction: drift toward the nearest shelter and tuck in.
   flee() {
     if (this.state !== "flee") {
       if (shelters.length) {
@@ -1120,23 +1145,51 @@ class Fish {
     this.alphaTarget = 0;
   }
 
+  // Begin a brief, calming special move.
+  startFlourish() {
+    const type = random(["rise", "dive", "loop", "about", "hover"]);
+    if (type === "loop") {
+      const spin = random() < 0.5 ? 1 : -1;
+      const r = random(45, 80);
+      const angle0 = random(TWO_PI);
+      this.flour = {
+        type, spin, r, angle: angle0, timer: Math.round(TWO_PI / LOOP_SPEED) + 10,
+        cx: this.x - Math.cos(angle0) * r, cy: this.y - Math.sin(angle0) * r,
+      };
+    } else if (type === "about") {
+      this.flour = { type, timer: 130, startDir: this.dir };
+    } else {
+      this.flour = { type, timer: random(FLOURISH_MIN, FLOURISH_MAX) };
+    }
+  }
+
+  _runFlourish() {
+    const f = this.flour;
+    f.timer--;
+    f.speed = this.baseSpeed;
+    if (f.type === "rise") { this.pitchTarget = -LEAN_STRONG; f.speed = this.baseSpeed * 0.95; }
+    else if (f.type === "dive") { this.pitchTarget = LEAN_STRONG; f.speed = this.baseSpeed * 0.95; }
+    else if (f.type === "hover") { this.pitchTarget = 0; f.speed = this.baseSpeed * 0.06; }
+    else if (f.type === "about") { this.dir = -f.startDir; if (Math.abs(this.face - this.dir) < 0.1) f.timer = Math.min(f.timer, 1); }
+    else if (f.type === "loop") {
+      f.angle += f.spin * LOOP_SPEED;
+      this._steerTo(f.cx + Math.cos(f.angle) * f.r, f.cy + Math.sin(f.angle) * f.r, 0.6);
+      f.speed = this.baseSpeed * 1.15;
+    }
+    if (f.timer <= 0) this.flour = null;
+  }
+
   update(a, food) {
     this.swayTime += 0.04;
-    if (this.maturity < 1) { this.maturity = Math.min(1, this.maturity + 1 / MATURE_FRAMES); }
+    if (this.maturity < 1) this.maturity = Math.min(1, this.maturity + 1 / MATURE_FRAMES);
     this._setSize();
     this.alpha += (this.alphaTarget - this.alpha) * 0.03;
-
-    // Depth drifts slowly toward a target layer (visible swim back/forward).
-    if (--this.depthTimer <= 0) {
-      this.depthTarget = floor(random(DEPTH_LAYERS)) / (DEPTH_LAYERS - 1);
-      this.depthTimer = random(360, 900);
-    }
-    this.depth += (this.depthTarget - this.depth) * 0.015;
-
     if (this.satiated > 0) this.satiated--;
-    if (this.caught) return;
+    if (this.caught) return; // frozen while held
 
     let targetSpeed = this.baseSpeed;
+    let depthEase = 0.015;
+    const newLayer = () => floor(random(DEPTH_LAYERS)) / (DEPTH_LAYERS - 1);
 
     if (this.state === "leaving") {
       targetSpeed = this.baseSpeed * 1.5;
@@ -1144,21 +1197,22 @@ class Fish {
       if (this.alpha < 0.04 || this.x < -120 || this.x > a.w + 120) this.gone = true;
 
     } else if (this.state === "flee") {
+      this.flour = null;
       if (--this.timer <= 0) this.state = "wander";
       this._steerTo(this.hideX, this.hideY, PITCH_SEEK);
       targetSpeed = Math.hypot(this.hideX - this.x, this.hideY - this.y) > 60 ? this.baseSpeed * 1.8 : this.baseSpeed * 0.2;
 
     } else if (this.parent && this.parentAlive) {
-      // Baby trails behind its parent, lagging so it stays visible.
+      this.flour = null; this.state = "wander";
       const p = this.parent;
-      this.depthTarget = p.depth; // swim together at the same depth
+      this.depthTarget = p.depth; // swim together
       const tx = p.x - p.dir * TRAIL_DIST, ty = p.y;
       const dd = Math.hypot(tx - this.x, ty - this.y);
       this._steerTo(tx, ty, PITCH_SEEK);
       targetSpeed = constrain(map(dd, 0, 140, this.baseSpeed * 0.2, this.baseSpeed * 1.7), 0, this.baseSpeed * 1.7);
 
     } else {
-      // Look for food (unless recently fed), else drift calmly.
+      // Nearest flake within range (ignored just after a bite)?
       let target = null, best = SEEK_RADIUS * SEEK_RADIUS;
       if (food && this.satiated <= 0) {
         for (const fl of food) {
@@ -1167,44 +1221,53 @@ class Fish {
           if (d2 < best) { best = d2; target = fl; }
         }
       }
+
       if (target) {
-        this.state = "seek";
+        // Come to the front layer; food can only be eaten there.
+        this.flour = null; this.state = "seek";
+        this.depthTarget = 0; depthEase = SEEK_DEPTH_EASE;
         this._steerTo(target.x, target.y, PITCH_SEEK);
         targetSpeed = this.baseSpeed * 1.5;
         const dx = target.x - this.x, dy = target.y - this.y;
-        if (Math.abs(dx) < this.w * 0.5 && Math.abs(dy) < this.h * 0.6 && !target.eaten) {
+        if (this.depth < FRONT_EAT_DEPTH && Math.abs(dx) < this.w * 0.5 && Math.abs(dy) < this.h * 0.6 && !target.eaten) {
           target.eaten = true; this.eat();
         }
+      } else if (this.flour) {
+        this.state = "wander";
+        this._runFlourish();
+        if (this.flour) targetSpeed = this.flour.speed;
+        if (--this.depthTimer <= 0) { this.depthTarget = newLayer(); this.depthTimer = random(360, 900); }
       } else {
         this.state = "wander";
-        // Mostly drift sideways; rarely (and calmly) turn around.
+        // Mostly drift; occasionally (and softly) turn around.
         if (--this.turnTimer <= 0) {
           this.turnTimer = random(TURN_MIN_FRAMES, TURN_MAX_FRAMES);
           if (random() < TURN_CHANCE) this.dir *= -1;
         }
-        // Gentle vertical lean that eases up and down over time.
-        this.pitchTarget = (noise(this.nSeed, frameCount * 0.004) - 0.5) * 2 * PITCH_WANDER;
+        this.pitchTarget = (noise(this.nSeed, frameCount * 0.004) - 0.5) * 2 * LEAN_WANDER;
+        if (--this.depthTimer <= 0) { this.depthTarget = newLayer(); this.depthTimer = random(360, 900); }
       }
     }
 
-    // Edges: turn away from side walls; lean back in from top/bottom.
+    // Edges: begin a soft turn well before the side walls; lean back from top/bottom.
     if (this.state !== "leaving") {
-      const m = 80;
-      if (this.x < m && this.dir < 0) this.dir = 1;
-      else if (this.x > a.w - m && this.dir > 0) this.dir = -1;
+      if (this.x < SIDE_MARGIN && this.dir < 0) this.dir = 1;
+      else if (this.x > a.w - SIDE_MARGIN && this.dir > 0) this.dir = -1;
       const topM = a.margin + this.h, botM = a.h - a.margin - this.h;
-      if (this.y < topM) this.pitchTarget = Math.max(this.pitchTarget, 0.45);   // head down
-      else if (this.y > botM) this.pitchTarget = Math.min(this.pitchTarget, -0.45); // head up
+      if (this.y < topM) this.pitchTarget = Math.max(this.pitchTarget, LEAN_EDGE);
+      else if (this.y > botM) this.pitchTarget = Math.min(this.pitchTarget, -LEAN_EDGE);
     }
 
+    // Ease facing (soft turn), lean, and depth
+    this.face += (this.dir - this.face) * TURN_EASE;
     this.pitch += (this.pitchTarget - this.pitch) * 0.04;
-    this.heading = Math.atan2(Math.sin(this.pitch), this.dir * Math.cos(this.pitch)); // for drawing
+    this.depth += (this.depthTarget - this.depth) * depthEase;
 
-    // Integrate (mostly horizontal; far fish a touch slower for parallax)
+    // Integrate (mostly horizontal; the |face| term slows + reverses through a turn)
     const depthSpeed = lerp(1, 0.6, this.depth);
     this.speedMult += (targetSpeed - this.speedMult) * 0.05;
     const v = this.speedMult * depthSpeed;
-    this.x += this.dir * v * Math.cos(this.pitch);
+    this.x += this.face * v * Math.cos(this.pitch);
     this.y += v * Math.sin(this.pitch);
 
     this.x = constrain(this.x, -150, a.w + 150);
@@ -1215,17 +1278,19 @@ class Fish {
     const ds = lerp(1, DEPTH_BACK_SCALE, this.depth);
     const w = this.w * ds, h = this.h * ds;
     const sway = Math.sin(this.swayTime) * 3 * ds;
-    // Colour grade increases with depth; front fish stay full-colour.
     const r = lerp(255, 150, this.depth);
     const g = lerp(255, 200, this.depth);
     const b = lerp(255, 215, this.depth);
     const a = lerp(255, DEPTH_BACK_FADE, this.depth) * constrain(this.alpha, 0, 1);
 
+    const fdir = this.face >= 0 ? 1 : -1;
+    const heading = Math.atan2(Math.sin(this.pitch), fdir * Math.cos(this.pitch));
+
     push();
     tint(r, g, b, a);
     translate(this.x, this.y + sway);
-    if (Math.cos(this.heading) >= 0) { scale(-1, 1); rotate(-this.heading); }
-    else { rotate(this.heading + PI); }
+    scale(-this.face, 1);                 // continuous mirror; squishes to a sliver mid-turn
+    rotate(fdir >= 0 ? -heading : heading + PI);
     imageMode(CENTER);
     image(this.img, 0, 0, w, h);
     pop();
