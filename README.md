@@ -60,12 +60,35 @@ download `jszip.min.js` and `FileSaver.min.js` locally and adjust
   webcam — required by browsers).
 - **Scan:** hold a drawing up to the webcam, adjust the threshold slider if
   needed, press **Capture Fish** (or the spacebar).
-- **Paste:** copy an image (PowerPoint shape, slide graphic, etc.) and press
-  **Ctrl/Cmd-V**. It lands in the previewer for cleanup, then Capture.
-- **Upload:** **Upload Image** loads a PNG/JPEG into the previewer the same way.
+- **Paste:** copy an image and press **Ctrl/Cmd-V**, or use the **Paste**
+  button (the button needs clipboard permission — if your device blocks it,
+  it'll tell you to use Ctrl+V).
+- **Upload:** **Upload Image** loads a PNG/JPEG into the previewer.
+- **Rotate / flip:** the ↻ ⇄ ⇅ buttons on the mask preview rotate-right and
+  flip the image before you capture it.
 - Tap the **webcam preview** any time to switch the previewer back to live.
 - **Tap a fish** to turn it around; **press and hold** a fish to remove it.
+- **Tap or swipe** open water to scare the fish; **hold still** on the water to
+  drop food. Fish that eat **grow**, and every few feeds an original spawns a
+  small **clone** of itself (cloning pauses at the fish cap).
+- A **shark** silhouette passes through roughly every 5 minutes; the fish flee
+  and hide behind the rocks and coral. The shark never eats them.
 - **Backup/Restore Tank** saves or reloads all current fish as a ZIP.
+
+## Tuning
+
+All the dials are constants near the top of `sketch.js`: `FISH_CAP` (raise for a
+bigger tank), `GROWTH_CAP`, `CLONE_EVERY`, `SHARK_INTERVAL_MS`, `SCARE_RADIUS`,
+`SEEK_RADIUS`, `FOOD_HOLD_MS`, and `MAX_FISH_IMG_EDGE` (fish image resolution).
+
+## Swapping the rocks & coral for your own art
+
+The foreground is generated procedurally (unique each load). To use your own
+pictures instead, drop `foreground_1.png`, `foreground_2.png`,
+`foreground_3.png` (transparent PNGs) in `assets/`, preload them, and replace
+the bodies of `buildForeground()` / `drawForeground()` in `sketch.js` to pick
+one at random and draw it across the bottom. The fish hide logic keys off each
+shelter's `hideX`/`hideY`, so set those per image and the behaviour still works.
 
 ### Background removal notes
 
