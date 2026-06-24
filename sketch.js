@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.6";
+const VERSION = "v1.7";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -24,7 +24,7 @@ const MAX_FISH_IMG_EDGE = 140; // stored image longest edge, px
 
 // ---- Interaction ----
 const LONG_PRESS_MS = 550;     // hold this long to delete a caught fish
-const HIT_INFLATE = 1.25;      // forgiving touch box
+const ALPHA_HIT = 24;          // a tap registers only on image pixels at/above this alpha
 
 // ---- Feeding ----
 const MOVE_THRESH = 16;        // px of movement that turns a press into a drag
@@ -1409,12 +1409,44 @@ class Fish {
   }
 
   hit(lx, ly) {
+    if (!this.img) return false;
     const ds = lerp(1, DEPTH_BACK_SCALE, this.depth);
-    const hw = (this.w * ds / 2) * HIT_INFLATE;
-    const hh = (this.h * ds / 2) * HIT_INFLATE;
+    const w = this.w * ds, h = this.h * ds;
+    if (w <= 0 || h <= 0) return false;
     const sway = Math.sin(this.swayTime) * 3 * ds;
-    return lx > this.x - hw && lx < this.x + hw &&
-           ly > this.y + sway - hh && ly < this.y + sway + hh;
+
+    // Rebuild the exact draw transform (translate -> scale(-face,1) -> rotate)
+    // and invert it, so we know which source-image pixel the tap fell on. Only
+    // an opaque pixel counts -- a tap in the empty corner of the box misses.
+    const fdir = this.face >= 0 ? 1 : -1;
+    const heading = Math.atan2(Math.sin(this.pitch), fdir * Math.cos(this.pitch));
+    const rot = fdir >= 0 ? -heading : heading + PI;
+    const sx = -this.face;                    // draw uses scale(-face, 1)
+    if (Math.abs(sx) < 1e-3) return false;    // mid-turn sliver: nothing to grab
+
+    // Undo translate, then scale, then rotate.
+    const qx = (lx - this.x) / sx;
+    const qy = ly - (this.y + sway);
+    const c = Math.cos(rot), s = Math.sin(rot);
+    const ix = qx * c + qy * s;               // rotate by -rot
+    const iy = -qx * s + qy * c;
+
+    // Centered display space -> source pixel coords.
+    const px = (ix / w + 0.5) * this.img.width;
+    const py = (iy / h + 0.5) * this.img.height;
+    if (px < 0 || py < 0 || px >= this.img.width || py >= this.img.height) return false;
+
+    return this._alphaAt(px | 0, py | 0) >= ALPHA_HIT;
+  }
+
+  // Alpha of a source-image pixel. Pixels are loaded once and cached on the
+  // image object, so babies/duplicates sharing an image share the cache too.
+  _alphaAt(px, py) {
+    const img = this.img;
+    if (!img._aLoaded) { img.loadPixels(); img._aLoaded = true; }
+    const idx = (py * img.width + px) * 4 + 3;
+    if (!img.pixels || idx >= img.pixels.length) return 255; // be forgiving if unreadable
+    return img.pixels[idx];
   }
 }
 
