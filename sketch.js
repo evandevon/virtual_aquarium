@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.4";
+const VERSION = "v1.5";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -78,7 +78,13 @@ const TRAIL_DIST = 75;         // how far a baby lags behind its parent
 // ---- Depth (parallax layers) ----
 const DEPTH_LAYERS = 10;       // number of depth bands
 const DEPTH_BACK_SCALE = 0.55; // size of the furthest fish vs nearest
-const DEPTH_BACK_FADE = 150;   // alpha of the furthest fish (0–255)
+// Far fish keep their opacity now; depth reads as a cooler, muted tint instead
+// of a fade. Tint is multiplicative, so it pulls colours toward these targets
+// (R dropped most, B kept highest) — saturated fish read "cooler/dimmer" rather
+// than truly desaturated, which is the expected limit of a single tint pass.
+const DEPTH_TINT_R = 120;      // furthest fish: red knocked back hardest
+const DEPTH_TINT_G = 175;
+const DEPTH_TINT_B = 225;      // blue preserved -> the receding-into-water look
 
 // ---- Shark (calm visitor) ----
 const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
@@ -503,39 +509,130 @@ function createMaskWorker() {
         return;
       }
 
-      // Opaque source (webcam / flat image): brightness-based removal.
-      // A pixel is a "background candidate" if it's transparent OR bright.
-      const bw = new Uint8Array(width * height);
-      for (let i = 0; i < pixels.length; i += 4) {
-        const a = pixels[i + 3];
-        const brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
-        bw[i >> 2] = (a > 128 && brightness < threshold) ? 1 : 0;
+      // Opaque source (webcam / flat image): white-paper background removal,
+      // tuned for kids' drawings under uneven classroom lighting.
+      //
+      // The signal we trust: real drawing is either genuinely DARK (ink/pencil)
+      // or COLOURED (has chroma). A cast shadow on white paper is neither — it's
+      // a mid-bright, near-grey region. So the brightness threshold alone (the
+      // old approach) kept shadows; here we instead:
+      //   1) seed confident "subject" pixels (dark OR chromatic),
+      //   2) GROW that seed a few px into faint/anti-aliased neighbours, which
+      //      rescues light pencil joined to darker ink  [neighbour weighting],
+      //   3) be more forgiving toward the CENTRE (where the fish sits) and
+      //      stricter at the edges (where paper + shadow live) [centre weighting],
+      //   4) flood the remaining non-subject inward from the borders, so a whole
+      //      sheet of paper AND its soft grey shadow wash out, whatever their
+      //      absolute brightness — this is what copes with uneven lighting,
+      //   5) "open" the kept mask (erode then dilate) to shed thin shadow fringe
+      //      and speckle without gnawing the body.
+      const N = width * height;
+
+      // The slider drives the dark floor: higher = keep lighter / fainter marks.
+      const DARK_FLOOR  = threshold * 0.6;  // brightness <= this = definitely ink
+      const SAT_KEEP    = 34;               // chroma >= this = definitely colour
+      const WHITE_CUT   = 230;              // never grow the seed into near-white
+      const CENTRE_BIAS = 35;               // extra dark-floor allowance at dead centre
+      const GROW_PASSES = 3;                // how far the seed creeps along faint marks
+      const GROW_NEED_C = 2;                // subject-neighbours needed near centre
+      const GROW_NEED_E = 4;                // ...and (more) needed out at the edges
+      const OPEN_OFF    = 6;                // erode pixels with >= this many empty neighbours
+      const OPEN_ON     = 6;                // dilate back pixels with >= this many full neighbours
+
+      const cx = (width - 1) / 2, cy = (height - 1) / 2;
+      const maxR = Math.hypot(cx, cy);
+      const idxAt = (x, y) => y * width + x;
+
+      const bright = new Float32Array(N);
+      const cw = new Float32Array(N);   // centre weight, 1 at middle -> 0 at corners
+      const st = new Uint8Array(N);     // 1 = subject, 0 = candidate (later: 2 = removed bg)
+
+      // 1) Confident seed + per-pixel features.
+      for (let i = 0, p = 0; i < N; i++, p += 4) {
+        const r = pixels[p], g = pixels[p + 1], b = pixels[p + 2], al = pixels[p + 3];
+        const mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        const mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        const br = (r + g + b) / 3;
+        bright[i] = br;
+        const x = i % width, y = (i / width) | 0;
+        let w = 1 - Math.hypot(x - cx, y - cy) / maxR;
+        if (w < 0) w = 0;
+        cw[i] = w;
+        const floor = DARK_FLOOR + CENTRE_BIAS * w;
+        st[i] = (al > 128 && ((mx - mn) >= SAT_KEEP || br <= floor)) ? 1 : 0;
       }
 
-      function floodFill(x, y) {
-        const start = y * width + x;
-        if (bw[start] !== 0) return;
-        const stack = [start];
-        while (stack.length) {
-          const idx = stack.pop();
-          if (idx < 0 || idx >= width * height || bw[idx] !== 0) continue;
-          bw[idx] = 2;
-          const px = idx % width, py = (idx / width) | 0;
-          if (px > 0) stack.push(idx - 1);
-          if (px < width - 1) stack.push(idx + 1);
-          if (py > 0) stack.push(idx - width);
-          if (py < height - 1) stack.push(idx + width);
+      // 2)+3) Grow the seed into faint neighbours, more eagerly toward the centre.
+      for (let pass = 0; pass < GROW_PASSES; pass++) {
+        const add = [];
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const i = idxAt(x, y);
+            if (st[i] !== 0 || bright[i] > WHITE_CUT) continue;
+            let n = 0;
+            if (x > 0           && st[i - 1])         n++;
+            if (x < width - 1   && st[i + 1])         n++;
+            if (y > 0           && st[i - width])     n++;
+            if (y < height - 1  && st[i + width])     n++;
+            if (x > 0 && y > 0                   && st[i - width - 1]) n++;
+            if (x < width - 1 && y > 0           && st[i - width + 1]) n++;
+            if (x > 0 && y < height - 1          && st[i + width - 1]) n++;
+            if (x < width - 1 && y < height - 1  && st[i + width + 1]) n++;
+            const need = GROW_NEED_E + (GROW_NEED_C - GROW_NEED_E) * cw[i];
+            if (n >= need) add.push(i);
+          }
         }
+        if (!add.length) break;
+        for (let k = 0; k < add.length; k++) st[add[k]] = 1;
       }
-      for (let x = 0; x < width; x++) { floodFill(x, 0); floodFill(x, height - 1); }
-      for (let y = 0; y < height; y++) { floodFill(0, y); floodFill(width - 1, y); }
 
-      for (let i = 0; i < bw.length; i++) {
-        const p = i * 4;
-        if (bw[i] === 1) { // kept subject
-          output[p] = pixels[p]; output[p+1] = pixels[p+1];
-          output[p+2] = pixels[p+2]; output[p+3] = 255;
-        } // 0 (interior hole reclaimed) and 2 (outside) -> transparent
+      // 4) Flood the remaining candidates in from the borders (paper + its
+      // connected shadow) and mark them removed (2).
+      const stack = [];
+      const seed = (i) => { if (st[i] === 0) { st[i] = 2; stack.push(i); } };
+      for (let x = 0; x < width; x++) { seed(x); seed((height - 1) * width + x); }
+      for (let y = 0; y < height; y++) { seed(y * width); seed(y * width + width - 1); }
+      while (stack.length) {
+        const idx = stack.pop();
+        const px = idx % width, py = (idx / width) | 0;
+        if (px > 0          && st[idx - 1] === 0)     { st[idx - 1] = 2; stack.push(idx - 1); }
+        if (px < width - 1  && st[idx + 1] === 0)     { st[idx + 1] = 2; stack.push(idx + 1); }
+        if (py > 0          && st[idx - width] === 0) { st[idx - width] = 2; stack.push(idx - width); }
+        if (py < height - 1 && st[idx + width] === 0) { st[idx + width] = 2; stack.push(idx + width); }
+      }
+      // Enclosed leftovers (st == 0: bright holes ringed by subject) stay transparent.
+
+      // 5) Morphological open on the kept mask to drop thin shadow fringe/speckle.
+      let keep = new Uint8Array(N);
+      for (let i = 0; i < N; i++) keep[i] = st[i] === 1 ? 1 : 0;
+
+      const morph = (src, erode) => {
+        const out = new Uint8Array(N);
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const i = idxAt(x, y);
+            let on = 0, off = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                const xx = x + dx, yy = y + dy;
+                if (xx < 0 || yy < 0 || xx >= width || yy >= height) { off++; continue; }
+                if (src[idxAt(xx, yy)]) on++; else off++;
+              }
+            }
+            out[i] = erode ? (off >= OPEN_OFF ? 0 : src[i])
+                           : (on  >= OPEN_ON  ? 1 : src[i]);
+          }
+        }
+        return out;
+      };
+      keep = morph(keep, true);
+      keep = morph(keep, false);
+
+      for (let i = 0, p = 0; i < N; i++, p += 4) {
+        if (keep[i]) {
+          output[p] = pixels[p]; output[p + 1] = pixels[p + 1];
+          output[p + 2] = pixels[p + 2]; output[p + 3] = 255;
+        }
       }
       self.postMessage({ pixels: output, width, height });
     };
@@ -915,8 +1012,8 @@ function spawnBaby(parent, a) {
     parent,
     baseLongest: parent.baseLongest,        // grows up to the parent's adult size
     depth: parent.depth,
-    x: parent.x - Math.cos(parent.heading) * TRAIL_DIST,
-    y: parent.y - Math.sin(parent.heading) * TRAIL_DIST,
+    x: parent.x - parent.dir * TRAIL_DIST,   // parent.heading never existed -> was NaN
+    y: parent.y,
   }));
   playSplash();
 }
@@ -1270,6 +1367,12 @@ class Fish {
     this.x += this.face * v * Math.cos(this.pitch);
     this.y += v * Math.sin(this.pitch);
 
+    // Hardening: a stray NaN (e.g. from a bad spawn) must not strand a fish forever.
+    if (!Number.isFinite(this.x) || !Number.isFinite(this.y)) {
+      this.x = a.w / 2; this.y = a.h / 2;
+      this.pitch = 0; this.speedMult = this.baseSpeed;
+      if (!Number.isFinite(this.depth)) this.depth = 0.5;
+    }
     this.x = constrain(this.x, -150, a.w + 150);
     if (this.state !== "leaving") this.y = constrain(this.y, this.h / 2, a.h - this.h / 2);
   }
@@ -1278,10 +1381,10 @@ class Fish {
     const ds = lerp(1, DEPTH_BACK_SCALE, this.depth);
     const w = this.w * ds, h = this.h * ds;
     const sway = Math.sin(this.swayTime) * 3 * ds;
-    const r = lerp(255, 150, this.depth);
-    const g = lerp(255, 200, this.depth);
-    const b = lerp(255, 215, this.depth);
-    const a = lerp(255, DEPTH_BACK_FADE, this.depth) * constrain(this.alpha, 0, 1);
+    const r = lerp(255, DEPTH_TINT_R, this.depth);
+    const g = lerp(255, DEPTH_TINT_G, this.depth);
+    const b = lerp(255, DEPTH_TINT_B, this.depth);
+    const a = 255 * constrain(this.alpha, 0, 1); // opacity no longer fades with depth
 
     const fdir = this.face >= 0 ? 1 : -1;
     const heading = Math.atan2(Math.sin(this.pitch), fdir * Math.cos(this.pitch));
