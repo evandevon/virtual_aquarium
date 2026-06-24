@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.5";
+const VERSION = "v1.6";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -1212,6 +1212,12 @@ class Fish {
   eat() {
     this.fed = Math.min(this.fed * GROW_PER_FEED, FEED_MAX);
     this.satiated = random(SATIATED_FRAMES * 0.8, SATIATED_FRAMES * 1.4);
+    // A baby that manages its first feed strikes out on its own, and from then
+    // on swims, seeks, flourishes and (once grown) reproduces like any adult.
+    if (this.parent && this.parentAlive) {
+      this.parent = null;
+      this.parentAlive = false;
+    }
   }
 
   flip() { this.dir *= -1; }   // face eases across -> soft turn
@@ -1288,6 +1294,18 @@ class Fish {
     let depthEase = 0.015;
     const newLayer = () => floor(random(DEPTH_LAYERS)) / (DEPTH_LAYERS - 1);
 
+    // Nearest flake within range (ignored just after a bite). Computed for ALL
+    // fish up front so even a parent-following baby can break off to feed.
+    let target = null;
+    if (food && this.satiated <= 0) {
+      let best = SEEK_RADIUS * SEEK_RADIUS;
+      for (const fl of food) {
+        if (fl.eaten) continue;
+        const dx = fl.x - this.x, dy = fl.y - this.y, d2 = dx * dx + dy * dy;
+        if (d2 < best) { best = d2; target = fl; }
+      }
+    }
+
     if (this.state === "leaving") {
       targetSpeed = this.baseSpeed * 1.5;
       this.pitchTarget = 0;
@@ -1299,6 +1317,18 @@ class Fish {
       this._steerTo(this.hideX, this.hideY, PITCH_SEEK);
       targetSpeed = Math.hypot(this.hideX - this.x, this.hideY - this.y) > 60 ? this.baseSpeed * 1.8 : this.baseSpeed * 0.2;
 
+    } else if (target) {
+      // Food is up for grabs: come to the front layer (food is only eaten
+      // there). Checked before parent-following so a baby breaks off to feed.
+      this.flour = null; this.state = "seek";
+      this.depthTarget = 0; depthEase = SEEK_DEPTH_EASE;
+      this._steerTo(target.x, target.y, PITCH_SEEK);
+      targetSpeed = this.baseSpeed * 1.5;
+      const dx = target.x - this.x, dy = target.y - this.y;
+      if (this.depth < FRONT_EAT_DEPTH && Math.abs(dx) < this.w * 0.5 && Math.abs(dy) < this.h * 0.6 && !target.eaten) {
+        target.eaten = true; this.eat();
+      }
+
     } else if (this.parent && this.parentAlive) {
       this.flour = null; this.state = "wander";
       const p = this.parent;
@@ -1308,42 +1338,21 @@ class Fish {
       this._steerTo(tx, ty, PITCH_SEEK);
       targetSpeed = constrain(map(dd, 0, 140, this.baseSpeed * 0.2, this.baseSpeed * 1.7), 0, this.baseSpeed * 1.7);
 
-    } else {
-      // Nearest flake within range (ignored just after a bite)?
-      let target = null, best = SEEK_RADIUS * SEEK_RADIUS;
-      if (food && this.satiated <= 0) {
-        for (const fl of food) {
-          if (fl.eaten) continue;
-          const dx = fl.x - this.x, dy = fl.y - this.y, d2 = dx * dx + dy * dy;
-          if (d2 < best) { best = d2; target = fl; }
-        }
-      }
+    } else if (this.flour) {
+      this.state = "wander";
+      this._runFlourish();
+      if (this.flour) targetSpeed = this.flour.speed;
+      if (--this.depthTimer <= 0) { this.depthTarget = newLayer(); this.depthTimer = random(360, 900); }
 
-      if (target) {
-        // Come to the front layer; food can only be eaten there.
-        this.flour = null; this.state = "seek";
-        this.depthTarget = 0; depthEase = SEEK_DEPTH_EASE;
-        this._steerTo(target.x, target.y, PITCH_SEEK);
-        targetSpeed = this.baseSpeed * 1.5;
-        const dx = target.x - this.x, dy = target.y - this.y;
-        if (this.depth < FRONT_EAT_DEPTH && Math.abs(dx) < this.w * 0.5 && Math.abs(dy) < this.h * 0.6 && !target.eaten) {
-          target.eaten = true; this.eat();
-        }
-      } else if (this.flour) {
-        this.state = "wander";
-        this._runFlourish();
-        if (this.flour) targetSpeed = this.flour.speed;
-        if (--this.depthTimer <= 0) { this.depthTarget = newLayer(); this.depthTimer = random(360, 900); }
-      } else {
-        this.state = "wander";
-        // Mostly drift; occasionally (and softly) turn around.
-        if (--this.turnTimer <= 0) {
-          this.turnTimer = random(TURN_MIN_FRAMES, TURN_MAX_FRAMES);
-          if (random() < TURN_CHANCE) this.dir *= -1;
-        }
-        this.pitchTarget = (noise(this.nSeed, frameCount * 0.004) - 0.5) * 2 * LEAN_WANDER;
-        if (--this.depthTimer <= 0) { this.depthTarget = newLayer(); this.depthTimer = random(360, 900); }
+    } else {
+      this.state = "wander";
+      // Mostly drift; occasionally (and softly) turn around.
+      if (--this.turnTimer <= 0) {
+        this.turnTimer = random(TURN_MIN_FRAMES, TURN_MAX_FRAMES);
+        if (random() < TURN_CHANCE) this.dir *= -1;
       }
+      this.pitchTarget = (noise(this.nSeed, frameCount * 0.004) - 0.5) * 2 * LEAN_WANDER;
+      if (--this.depthTimer <= 0) { this.depthTarget = newLayer(); this.depthTimer = random(360, 900); }
     }
 
     // Edges: begin a soft turn well before the side walls; lean back from top/bottom.
