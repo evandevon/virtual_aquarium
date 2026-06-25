@@ -155,7 +155,7 @@ let muted = false;
 //     backing track. Accepts youtube.com/watch?v=…, youtu.be/…, or a bare ID.
 //     It pre-fills the music box, so a teacher can just press Music then Play
 //     (no typing) to start it. Leave it "" for no default.
-const DEFAULT_MUSIC_URL = "https://www.youtube.com/watch?v=g9c2WTCj0Pk";
+const DEFAULT_MUSIC_URL = "www.youtube.com/watch?v=g9c2WTCj0Pk";
 let ytPlayer = null;
 let ytPlaying = false;
 let lastPasteMs = -9999;       // de-dupe between the paste event and Ctrl+V fallback
