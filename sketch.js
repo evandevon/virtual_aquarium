@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.7";
+const VERSION = "v1.8";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -150,6 +150,12 @@ let imgFileInput, zipFileInput;
 let muted = false;
 
 // YouTube background music (plays via the official embedded player, picture hidden)
+//
+// >>> DEFAULT TRACK: paste a YouTube link between the quotes to set a default
+//     backing track. Accepts youtube.com/watch?v=…, youtu.be/…, or a bare ID.
+//     It pre-fills the music box, so a teacher can just press Music then Play
+//     (no typing) to start it. Leave it "" for no default.
+const DEFAULT_MUSIC_URL = "";
 let ytPlayer = null;
 let ytPlaying = false;
 let lastPasteMs = -9999;       // de-dupe between the paste event and Ctrl+V fallback
@@ -283,7 +289,7 @@ function buildControls() {
   musicVolSlider.attribute("title", "Music volume");
   musicVolSlider.input(() => { if (ytPlayer && ytPlayer.setVolume) ytPlayer.setVolume(musicVolSlider.value()); });
 
-  musicInput = createInput("");
+  musicInput = createInput(DEFAULT_MUSIC_URL);
   musicInput.attribute("placeholder", "Paste a YouTube link…");
   musicInput.style("display", "none");
   musicInput.elt.addEventListener("keydown", (e) => {
@@ -388,6 +394,8 @@ function toggleMute() {
 function toggleMusicInput() {
   const showing = musicInput.elt.style.display !== "none";
   const d = showing ? "none" : "block";
+  // Opening an empty field: bring the default track back so Play just works.
+  if (!showing && !musicInput.value()) musicInput.value(DEFAULT_MUSIC_URL);
   musicInput.style("display", d);
   musicPlayBtn.style("display", d);
   if (!showing) musicInput.elt.focus();
