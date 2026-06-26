@@ -38,7 +38,7 @@ const GROW_PER_FEED = 1.08;    // size step per flake eaten
 const FEED_MAX = 2.0;          // feeding tops out at 2x adult size
 
 // ---- Size / growing up ----
-const FISH_START_SCALE = 1.2;  // adult size of brand-new (scanned) fish
+const FISH_START_SCALE = 1.5;  // adult size of brand-new (scanned) fish
 const BABY_START = 0.35;       // a baby starts at this fraction of adult size
 const MATURE_FRAMES = 60 * 90; // ~90s for a baby to grow up
 
