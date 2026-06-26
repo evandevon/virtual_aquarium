@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM   —  
+   CLASSROOM AQUARIUM
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.10";
+const VERSION = "v1.11";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -77,14 +77,19 @@ const TRAIL_DIST = 75;         // how far a baby lags behind its parent
 
 // ---- Depth (parallax layers) ----
 const DEPTH_LAYERS = 10;       // number of depth bands
-const DEPTH_BACK_SCALE = 0.55; // size of the furthest fish vs nearest
-// Far fish keep their opacity now; depth reads as a cooler, muted tint instead
-// of a fade. Tint is multiplicative, so it pulls colours toward these targets
-// (R dropped most, B kept highest) — saturated fish read "cooler/dimmer" rather
-// than truly desaturated, which is the expected limit of a single tint pass.
-const DEPTH_TINT_R = 120;      // furthest fish: red knocked back hardest
-const DEPTH_TINT_G = 175;
-const DEPTH_TINT_B = 225;      // blue preserved -> the receding-into-water look
+const DEPTH_BACK_SCALE = 0.52; // size of the furthest fish vs nearest
+// Atmospheric perspective: distant fish are hazier, duller, flatter and dimmer,
+// so they read as receding into the water rather than just shrinking. The cool
+// tint below is a gentle hue cast; the real desaturation/haze/contrast falloff
+// is done by a depth-scaled canvas filter in draw() (saturate/brightness/
+// contrast/blur), which a multiplicative tint alone can't achieve.
+const DEPTH_TINT_R = 210;      // soft cool cast (the filter does the desaturating)
+const DEPTH_TINT_G = 228;
+const DEPTH_TINT_B = 255;
+const DEPTH_BLUR_MAX = 2.2;    // px of haze at the very back (0 disables blur)
+const DEPTH_SAT      = 0.5;    // saturation multiplier at the very back
+const DEPTH_BRIGHT   = 0.78;   // brightness multiplier at the very back
+const DEPTH_CONTRAST = 0.8;    // contrast multiplier at the very back
 
 // ---- Shark (calm visitor) ----
 const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
@@ -1562,12 +1567,13 @@ class Fish {
   }
 
   draw() {
-    const ds = lerp(1, DEPTH_BACK_SCALE, this.depth);
+    const d = constrain(this.depth, 0, 1);
+    const ds = lerp(1, DEPTH_BACK_SCALE, d);
     const w = this.w * ds, h = this.h * ds;
     const sway = Math.sin(this.swayTime) * 3 * ds;
-    const r = lerp(255, DEPTH_TINT_R, this.depth);
-    const g = lerp(255, DEPTH_TINT_G, this.depth);
-    const b = lerp(255, DEPTH_TINT_B, this.depth);
+    const r = lerp(255, DEPTH_TINT_R, d);
+    const g = lerp(255, DEPTH_TINT_G, d);
+    const b = lerp(255, DEPTH_TINT_B, d);
     const a = 255 * constrain(this.alpha, 0, 1); // opacity no longer fades with depth
 
     const fdir = this.face >= 0 ? 1 : -1;
@@ -1579,7 +1585,18 @@ class Fish {
     scale(-this.face, 1);                 // continuous mirror; squishes to a sliver mid-turn
     rotate(fdir >= 0 ? -heading : heading + PI);
     imageMode(CENTER);
+
+    // Atmospheric perspective for the back fish (front fish stay crisp + cheap).
+    const filtered = d > 0.04;
+    if (filtered) {
+      const blur = DEPTH_BLUR_MAX * d;
+      const sat  = lerp(1, DEPTH_SAT, d);
+      const bri  = lerp(1, DEPTH_BRIGHT, d);
+      const con  = lerp(1, DEPTH_CONTRAST, d);
+      drawingContext.filter = `blur(${blur}px) saturate(${sat}) brightness(${bri}) contrast(${con})`;
+    }
     image(this.img, 0, 0, w, h);
+    if (filtered) drawingContext.filter = "none";
     pop();
   }
 
