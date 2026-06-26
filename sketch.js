@@ -44,7 +44,7 @@ const MATURE_FRAMES = 60 * 90; // ~90s for a baby to grow up
 
 // ---- Movement feel ----
 const TURN_EASE = 0.05;        // how softly fish arc when turning (higher = quicker)
-const LEAN_WANDER = 0.14;      // gentle baseline up/down lean while drifting (radians)
+const LEAN_WANDER = 0.40;      // gentle baseline up/down lean while drifting (radians)
 const LEAN_EDGE = 0.45;        // lean used to steer away from top/bottom
 const PITCH_SEEK = 0.7;        // steeper lean allowed when chasing food / hiding
 const SIDE_MARGIN = 130;       // how early a fish starts its turn near a side wall
