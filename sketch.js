@@ -76,8 +76,8 @@ const REPRO_MAX_MS = 150 * 1000;
 const TRAIL_DIST = 75;         // how far a baby lags behind its parent
 
 // ---- Depth (parallax layers) ----
-const DEPTH_LAYERS = 5;       // number of depth bands
-const DEPTH_BACK_SCALE = 0.52; // size of the furthest fish vs nearest
+const DEPTH_LAYERS = 3;       // number of depth bands
+const DEPTH_BACK_SCALE = 0.7; // size of the furthest fish vs nearest
 // Atmospheric perspective: distant fish are hazier, duller, flatter and dimmer,
 // so they read as receding into the water rather than just shrinking. The cool
 // tint below is a gentle hue cast; the real desaturation/haze/contrast falloff
@@ -87,8 +87,8 @@ const DEPTH_TINT_R = 190;      // soft cool cast (the filter does the desaturati
 const DEPTH_TINT_G = 228;
 const DEPTH_TINT_B = 255;
 const DEPTH_BLUR_MAX = 1;    // px of haze at the very back (0 disables blur)
-const DEPTH_SAT      = 0.5;    // saturation multiplier at the very back
-const DEPTH_BRIGHT   = 0.5;   // brightness multiplier at the very back
+const DEPTH_SAT      = 0.7;    // saturation multiplier at the very back
+const DEPTH_BRIGHT   = 0.7;   // brightness multiplier at the very back
 const DEPTH_CONTRAST = 0.8;    // contrast multiplier at the very back
 
 // ---- Shark (calm visitor) ----
