@@ -53,7 +53,7 @@ const TURN_MAX_FRAMES = 900;
 const TURN_CHANCE = 0.35;
 
 // ---- Flourishes (brief random moves; only a couple happen at once) ----
-const MAX_FLOURISH = 2;        // max fish doing a flourish at the same time
+const MAX_FLOURISH = 4;        // max fish doing a flourish at the same time
 const FLOURISH_CHECK = 90;     // frames between "should someone flourish?" checks
 const FLOURISH_CHANCE = 0.5;   // chance to start one when below the cap
 const FLOURISH_MIN = 150;      // duration range for timed flourishes (frames)
@@ -76,19 +76,19 @@ const REPRO_MAX_MS = 150 * 1000;
 const TRAIL_DIST = 75;         // how far a baby lags behind its parent
 
 // ---- Depth (parallax layers) ----
-const DEPTH_LAYERS = 10;       // number of depth bands
+const DEPTH_LAYERS = 5;       // number of depth bands
 const DEPTH_BACK_SCALE = 0.52; // size of the furthest fish vs nearest
 // Atmospheric perspective: distant fish are hazier, duller, flatter and dimmer,
 // so they read as receding into the water rather than just shrinking. The cool
 // tint below is a gentle hue cast; the real desaturation/haze/contrast falloff
 // is done by a depth-scaled canvas filter in draw() (saturate/brightness/
 // contrast/blur), which a multiplicative tint alone can't achieve.
-const DEPTH_TINT_R = 210;      // soft cool cast (the filter does the desaturating)
+const DEPTH_TINT_R = 190;      // soft cool cast (the filter does the desaturating)
 const DEPTH_TINT_G = 228;
 const DEPTH_TINT_B = 255;
-const DEPTH_BLUR_MAX = 2.2;    // px of haze at the very back (0 disables blur)
+const DEPTH_BLUR_MAX = 1;    // px of haze at the very back (0 disables blur)
 const DEPTH_SAT      = 0.5;    // saturation multiplier at the very back
-const DEPTH_BRIGHT   = 0.78;   // brightness multiplier at the very back
+const DEPTH_BRIGHT   = 0.5;   // brightness multiplier at the very back
 const DEPTH_CONTRAST = 0.8;    // contrast multiplier at the very back
 
 // ---- Shark (calm visitor) ----
