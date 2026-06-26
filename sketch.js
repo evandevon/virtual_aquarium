@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM
+   CLASSROOM AQUARIUM   —   v1.4
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.9";
+const VERSION = "v1.10";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -160,7 +160,7 @@ let muted = false;
 //     then ▶ on any track to start the loop. Leave the array empty for none.
 //     A one-item array behaves exactly like a single default track.
 const DEFAULT_PLAYLIST = [
-  // "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+  "https://youtu.be/g9c2WTCj0Pk",
 ];
 const PLAYLIST_MAX = 10;
 let trackError = new Array(PLAYLIST_MAX).fill(false); // per-row playback/parse failure
@@ -450,9 +450,9 @@ function buildMusicCard() {
 
     const clr = createButton("✕");
     clr.parent(row);
-    clr.attribute("title", "Clear this track");
+    clr.attribute("title", "Remove this track");
     clr.size(36, 34);
-    clr.mousePressed(() => clearRow(i));
+    clr.mousePressed(() => removeRow(i));
 
     musicRowEls[i] = row; musicUrlInputs[i] = inp; musicRowWarn[i] = warn;
   }
@@ -483,13 +483,29 @@ function refreshRows() {
 }
 
 function addTrackRow() { visibleRows = Math.min(PLAYLIST_MAX, visibleRows + 1); refreshRows(); }
-function clearRow(i) { musicUrlInputs[i].value(""); clearRowError(i); }
 
-function setRowError(i, on) {
-  trackError[i] = on;
+// ✕ : remove this row and slide every row below it up one. If nothing is below,
+// the row simply disappears (one fewer visible row) rather than hanging empty.
+function removeRow(i) {
+  for (let k = i; k < PLAYLIST_MAX - 1; k++) {
+    musicUrlInputs[k].value(musicUrlInputs[k + 1].value());
+    trackError[k] = trackError[k + 1];
+    renderRowError(k);
+  }
+  musicUrlInputs[PLAYLIST_MAX - 1].value("");   // clear the vacated last slot so it
+  trackError[PLAYLIST_MAX - 1] = false;         // can't still play or get backed up
+  renderRowError(PLAYLIST_MAX - 1);
+  if (i < currentIndex) currentIndex--;          // keep the playing track's index aligned
+  visibleRows = Math.max(0, visibleRows - 1);
+  refreshRows();
+}
+
+function renderRowError(i) {
+  const on = !!trackError[i];
   if (musicRowWarn[i]) musicRowWarn[i].style("visibility", on ? "visible" : "hidden");
   if (musicUrlInputs[i]) musicUrlInputs[i].style("color", on ? "#ff6b6b" : "#eaf6ff");
 }
+function setRowError(i, on) { trackError[i] = on; renderRowError(i); }
 function clearRowError(i) { setRowError(i, false); }
 
 function openMusicCard() { if (musicBackdrop) musicBackdrop.style("display", "flex"); }
