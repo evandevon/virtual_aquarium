@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM   —   v1.4
+   CLASSROOM AQUARIUM
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.8";
+const VERSION = "v1.9";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -145,17 +145,26 @@ let press = null;
 let controls = [];
 let captureBtn, uploadImgBtn, pasteBtn, backupBtn, restoreBtn, muteBtn;
 let rotateBtn, flipHBtn, flipVBtn;     // overlaid on the preview
-let musicLinkBtn, musicToggleBtn, musicInput, musicPlayBtn; // YouTube background music
+let musicLinkBtn, musicToggleBtn; // YouTube background music
+let musicBackdrop, musicCard, musicAddBtn;   // playlist editor card
+let musicRowEls = [], musicUrlInputs = [], musicRowWarn = []; // up to PLAYLIST_MAX rows
+let visibleRows = 1;
 let imgFileInput, zipFileInput;
 let muted = false;
 
 // YouTube background music (plays via the official embedded player, picture hidden)
 //
-// >>> DEFAULT TRACK: paste a YouTube link between the quotes to set a default
-//     backing track. Accepts youtube.com/watch?v=…, youtu.be/…, or a bare ID.
-//     It pre-fills the music box, so a teacher can just press Music then Play
-//     (no typing) to start it. Leave it "" for no default.
-const DEFAULT_MUSIC_URL = "www.youtube.com/watch?v=g9c2WTCj0Pk";
+// >>> DEFAULT PLAYLIST: paste up to 10 YouTube links between the quotes to set
+//     default backing tracks. Accepts youtube.com/watch?v=…, youtu.be/…, or a
+//     bare ID. They pre-fill the playlist card, so a teacher can press Music
+//     then ▶ on any track to start the loop. Leave the array empty for none.
+//     A one-item array behaves exactly like a single default track.
+const DEFAULT_PLAYLIST = [
+  // "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+];
+const PLAYLIST_MAX = 10;
+let trackError = new Array(PLAYLIST_MAX).fill(false); // per-row playback/parse failure
+let currentIndex = -1;         // row whose track is playing (-1 = none)
 let ytPlayer = null;
 let ytPlaying = false;
 let lastPasteMs = -9999;       // de-dupe between the paste event and Ctrl+V fallback
@@ -276,10 +285,10 @@ function buildControls() {
   muteBtn = createButton("🔊  Sound On");
   muteBtn.mousePressed(toggleMute);
 
-  // YouTube background music: short link button + volume-icon toggle + volume slider.
+  // YouTube background music: opens a playlist card; volume-icon toggle + slider.
   musicLinkBtn = createButton("🎵  Music");
-  musicLinkBtn.attribute("title", "Add background music from a YouTube link");
-  musicLinkBtn.mousePressed(toggleMusicInput);
+  musicLinkBtn.attribute("title", "Edit the background-music playlist");
+  musicLinkBtn.mousePressed(openMusicCard);
 
   musicToggleBtn = createButton("🔇");
   musicToggleBtn.attribute("title", "Turn the music on/off");
@@ -289,16 +298,7 @@ function buildControls() {
   musicVolSlider.attribute("title", "Music volume");
   musicVolSlider.input(() => { if (ytPlayer && ytPlayer.setVolume) ytPlayer.setVolume(musicVolSlider.value()); });
 
-  musicInput = createInput(DEFAULT_MUSIC_URL);
-  musicInput.attribute("placeholder", "Paste a YouTube link…");
-  musicInput.style("display", "none");
-  musicInput.elt.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") startYouTubeMusic(musicInput.value());
-  });
-
-  musicPlayBtn = createButton("▶");
-  musicPlayBtn.mousePressed(() => startYouTubeMusic(musicInput.value()));
-  musicPlayBtn.style("display", "none");
+  buildMusicCard();
 
   // Small transform buttons overlaid on the mask preview (applied before capture)
   rotateBtn = createButton("↻");
@@ -326,7 +326,7 @@ function buildControls() {
               musicVolSlider, rotateBtn, flipHBtn, flipVBtn];
 
   // Keep all DOM controls above the canvas so clicks/focus land on them.
-  for (const c of [...controls, musicInput, musicPlayBtn]) c.style("z-index", "5");
+  for (const c of controls) c.style("z-index", "5");
 }
 
 function layoutControls() {
@@ -366,11 +366,6 @@ function layoutControls() {
   musicToggleBtn.position(x + W - tW, y); musicToggleBtn.size(tW, H); y += H + G;
   musicVolSlider.position(x, y); musicVolSlider.style("width", W + "px"); y += 26;
 
-  // The link entry field pops up along the top of the aquarium.
-  const ax = previewW + previewMargin * 2;
-  musicInput.position(ax + 12, 14); musicInput.size(width - ax - 80, 30);
-  musicPlayBtn.position(width - 56, 12); musicPlayBtn.size(44, 34);
-
   textBlockY = y + 6; // canvas text starts here
 }
 let textBlockY = 0;
@@ -391,15 +386,114 @@ function toggleMute() {
 // hidden off-screen, so effectively you hear just the audio. Needs YouTube to
 // be reachable (may be blocked on school networks) and the video to allow embeds.
 
-function toggleMusicInput() {
-  const showing = musicInput.elt.style.display !== "none";
-  const d = showing ? "none" : "block";
-  // Opening an empty field: bring the default track back so Play just works.
-  if (!showing && !musicInput.value()) musicInput.value(DEFAULT_MUSIC_URL);
-  musicInput.style("display", d);
-  musicPlayBtn.style("display", d);
-  if (!showing) musicInput.elt.focus();
+// ----- Playlist editor card (opened by the 🎵 Music button) -----
+function buildMusicCard() {
+  musicBackdrop = createDiv("");
+  musicBackdrop.style("position", "fixed");
+  musicBackdrop.style("inset", "0");
+  musicBackdrop.style("display", "none");
+  musicBackdrop.style("align-items", "center");
+  musicBackdrop.style("justify-content", "center");
+  musicBackdrop.style("background", "rgba(2, 12, 20, 0.55)");
+  musicBackdrop.style("z-index", "20");
+  musicBackdrop.elt.addEventListener("pointerdown", (e) => {
+    if (e.target === musicBackdrop.elt) closeMusicCard(); // click the dim area to dismiss
+  });
+
+  musicCard = createDiv("");
+  musicCard.parent(musicBackdrop);
+  musicCard.style("box-sizing", "border-box");
+  musicCard.style("width", "min(520px, 92vw)");
+  musicCard.style("max-height", "82vh");
+  musicCard.style("overflow", "auto");
+  musicCard.style("padding", "18px");
+  musicCard.style("border-radius", "16px");
+  musicCard.style("background", "rgba(10, 40, 60, 0.97)");
+  musicCard.style("border", "1px solid rgba(140, 210, 245, 0.5)");
+  musicCard.style("box-shadow", "0 12px 44px rgba(0, 0, 0, 0.45)");
+  musicCard.style("color", "#eaf6ff");
+  musicCard.style("font-family", "-apple-system, 'Segoe UI', Roboto, sans-serif");
+
+  const title = createDiv("🎵 Playlist");
+  title.parent(musicCard);
+  title.style("font-size", "18px"); title.style("font-weight", "700"); title.style("margin-bottom", "4px");
+
+  const hint = createDiv("Press ▶ on a track to start the loop from there. Up to 10 tracks.");
+  hint.parent(musicCard);
+  hint.style("font-size", "12px"); hint.style("opacity", "0.75"); hint.style("margin-bottom", "12px");
+
+  for (let i = 0; i < PLAYLIST_MAX; i++) {
+    const row = createDiv("");
+    row.parent(musicCard);
+    row.style("display", "flex"); row.style("align-items", "center");
+    row.style("gap", "8px"); row.style("margin", "7px 0");
+
+    const warn = createSpan("⚠");
+    warn.parent(row);
+    warn.style("color", "#ff6b6b"); warn.style("font-size", "16px");
+    warn.style("flex", "0 0 16px"); warn.style("text-align", "center"); warn.style("visibility", "hidden");
+
+    const inp = createInput("");
+    inp.parent(row);
+    inp.attribute("placeholder", "Paste a YouTube link…");
+    inp.style("flex", "1"); inp.style("min-width", "0"); inp.style("font-size", "14px");
+    inp.style("padding", "7px 9px"); inp.style("border-radius", "9px");
+    inp.style("border", "1px solid rgba(140, 210, 245, 0.4)");
+    inp.style("background", "rgba(4, 20, 30, 0.9)"); inp.style("color", "#eaf6ff");
+    inp.elt.addEventListener("focus", () => clearRowError(i)); // editing => assume they're fixing it
+
+    const play = createButton("▶");
+    play.parent(row);
+    play.attribute("title", "Play the loop from this track");
+    play.size(40, 34);
+    play.mousePressed(() => playFrom(i));
+
+    const clr = createButton("✕");
+    clr.parent(row);
+    clr.attribute("title", "Clear this track");
+    clr.size(36, 34);
+    clr.mousePressed(() => clearRow(i));
+
+    musicRowEls[i] = row; musicUrlInputs[i] = inp; musicRowWarn[i] = warn;
+  }
+
+  musicAddBtn = createButton("＋  Add another track");
+  musicAddBtn.parent(musicCard);
+  musicAddBtn.style("margin-top", "6px");
+  musicAddBtn.mousePressed(addTrackRow);
+
+  const done = createButton("Done");
+  done.parent(musicCard);
+  done.class("primary-btn");
+  done.style("margin-top", "14px"); done.style("width", "100%");
+  done.mousePressed(closeMusicCard);
+
+  for (let i = 0; i < PLAYLIST_MAX; i++) {
+    if (DEFAULT_PLAYLIST[i]) musicUrlInputs[i].value(DEFAULT_PLAYLIST[i]);
+  }
+  visibleRows = Math.max(1, Math.min(PLAYLIST_MAX, DEFAULT_PLAYLIST.length));
+  refreshRows();
 }
+
+function refreshRows() {
+  for (let i = 0; i < PLAYLIST_MAX; i++) {
+    if (musicRowEls[i]) musicRowEls[i].style("display", i < visibleRows ? "flex" : "none");
+  }
+  if (musicAddBtn) musicAddBtn.style("display", visibleRows >= PLAYLIST_MAX ? "none" : "block");
+}
+
+function addTrackRow() { visibleRows = Math.min(PLAYLIST_MAX, visibleRows + 1); refreshRows(); }
+function clearRow(i) { musicUrlInputs[i].value(""); clearRowError(i); }
+
+function setRowError(i, on) {
+  trackError[i] = on;
+  if (musicRowWarn[i]) musicRowWarn[i].style("visibility", on ? "visible" : "hidden");
+  if (musicUrlInputs[i]) musicUrlInputs[i].style("color", on ? "#ff6b6b" : "#eaf6ff");
+}
+function clearRowError(i) { setRowError(i, false); }
+
+function openMusicCard() { if (musicBackdrop) musicBackdrop.style("display", "flex"); }
+function closeMusicCard() { if (musicBackdrop) musicBackdrop.style("display", "none"); }
 
 function parseYouTubeId(url) {
   if (!url) return null;
@@ -421,14 +515,8 @@ function loadYouTubeAPI() {
   });
 }
 
-async function startYouTubeMusic(url) {
-  const id = parseYouTubeId(url);
-  if (!id) { alert("Couldn't read that link. Paste a full YouTube URL (youtube.com/watch?v=… or youtu.be/…)."); return; }
-
-  try { await loadYouTubeAPI(); }
-  catch (e) { alert("Couldn't reach YouTube — your network may block it. This feature needs YouTube access."); return; }
-
-  // Hidden host element (off-screen so only audio is noticed)
+// ----- Playback engine: loop the playlist, advancing when each track ends -----
+function ensureYtHost() {
   let host = document.getElementById("yt-host");
   if (!host) {
     host = document.createElement("div");
@@ -436,32 +524,95 @@ async function startYouTubeMusic(url) {
     host.style.cssText = "position:absolute;left:-10000px;top:0;width:320px;height:180px;";
     document.body.appendChild(host);
   }
+  return host;
+}
 
-  if (ytPlayer) {
+function rowUrl(i) { return musicUrlInputs[i] ? musicUrlInputs[i].value().trim() : ""; }
+
+// Next row to play after `from` (wrapping). Empty rows are skipped silently,
+// already-flagged rows are skipped, and non-empty rows that don't parse get
+// flagged and skipped. Re-checks `from` last, so a 1-track playlist loops.
+function nextPlayableIndex(from) {
+  for (let step = 1; step <= PLAYLIST_MAX; step++) {
+    const i = (from + step) % PLAYLIST_MAX;
+    const url = rowUrl(i);
+    if (!url) continue;
+    if (trackError[i]) continue;
+    if (!parseYouTubeId(url)) { setRowError(i, true); continue; }
+    return i;
+  }
+  return -1;
+}
+
+// Teacher pressed ▶ on row i: an explicit (re)try that starts the loop here.
+async function playFrom(i) {
+  const url = rowUrl(i);
+  if (!url) return;                         // empty row: gentle ignore
+  setRowError(i, false);                    // a manual attempt clears any prior flag
+  const id = parseYouTubeId(url);
+  if (!id) { setRowError(i, true); return; } // bad link: flag, leave their text intact
+  try { await loadYouTubeAPI(); }
+  catch (e) { alert("Couldn't reach YouTube — your network may block it. This feature needs YouTube access."); return; }
+  currentIndex = i;
+  loadAndPlay(id);
+}
+
+// Current track ended or failed -> move to the next playable row.
+function advanceTrack() {
+  const n = nextPlayableIndex(currentIndex);
+  if (n < 0) { ytPlaying = false; currentIndex = -1; updateMusicToggle(); return; }
+  currentIndex = n;
+  loadAndPlay(parseYouTubeId(rowUrl(n)));
+}
+
+function loadAndPlay(id) {
+  ensureYtHost();
+  if (ytPlayer && ytPlayer.loadVideoById) {
     ytPlayer.loadVideoById(id);
     ytPlayer.playVideo();
     ytPlaying = true; updateMusicToggle();
-  } else {
-    ytPlayer = new YT.Player("yt-host", {
-      videoId: id,
-      playerVars: { autoplay: 1, controls: 0, loop: 1, playlist: id },
-      events: {
-        onReady: (e) => {
-          e.target.setVolume(musicVolSlider ? musicVolSlider.value() : 60);
-          e.target.playVideo(); ytPlaying = true; updateMusicToggle();
-        },
-        onError: () => alert("That video can't be played here (it may block embedding). Try another link."),
-      },
-    });
+    return;
   }
-  toggleMusicInput(); // tuck the field away again
+  ytPlayer = new YT.Player("yt-host", {
+    videoId: id,
+    playerVars: { autoplay: 1, controls: 0 },
+    events: {
+      onReady: (e) => {
+        e.target.setVolume(musicVolSlider ? musicVolSlider.value() : 60);
+        e.target.playVideo(); ytPlaying = true; updateMusicToggle();
+      },
+      onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) advanceTrack(); },
+      onError: () => {                        // dead / un-embeddable video
+        if (currentIndex >= 0) setRowError(currentIndex, true);
+        advanceTrack();
+      },
+    },
+  });
 }
 
 function toggleYouTubeMusic() {
-  if (!ytPlayer) { toggleMusicInput(); return; } // no track yet -> open the field
+  if (!ytPlayer) { openMusicCard(); return; } // nothing queued yet -> open the card
   if (ytPlaying) { ytPlayer.pauseVideo(); ytPlaying = false; }
   else { ytPlayer.playVideo(); ytPlaying = true; }
   updateMusicToggle();
+}
+
+// Non-empty links in row order (for backup).
+function currentPlaylistUrls() {
+  const out = [];
+  for (let i = 0; i < PLAYLIST_MAX; i++) { const u = rowUrl(i); if (u) out.push(u); }
+  return out;
+}
+
+// Replace the playlist from a restored backup.
+function loadPlaylist(urls) {
+  for (let i = 0; i < PLAYLIST_MAX; i++) {
+    const u = (typeof urls[i] === "string") ? urls[i] : "";
+    if (musicUrlInputs[i]) musicUrlInputs[i].value(u);
+    setRowError(i, false);
+  }
+  visibleRows = Math.max(1, Math.min(PLAYLIST_MAX, urls.length));
+  refreshRows();
 }
 
 function updateMusicToggle() {
@@ -1721,6 +1872,8 @@ async function backupFish() {
     const dataURL = f.img.canvas.toDataURL("image/png");
     zip.file(`fish_${i}.png`, dataURLToBlob(dataURL));
   });
+  const urls = currentPlaylistUrls();
+  if (urls.length) zip.file("playlist.json", JSON.stringify(urls));
   const blob = await zip.generateAsync({ type: "blob" });
   const ts = new Date().toISOString().replace(/:/g, "-").replace(/\..+/, "");
   saveAs(blob, `aquarium_backup_${ts}.zip`);
@@ -1740,6 +1893,13 @@ async function handleZipFile(file) {
   if (!file.name.toLowerCase().endsWith(".zip")) { alert("Please choose a ZIP backup."); return; }
   try {
     const zip = await JSZip.loadAsync(file.file);
+    const plFile = Object.values(zip.files).find((f) => !f.dir && /(^|\/)playlist\.json$/i.test(f.name));
+    if (plFile) {
+      try {
+        const arr = JSON.parse(await plFile.async("string"));
+        if (Array.isArray(arr)) loadPlaylist(arr); // replace the current playlist
+      } catch (e) { /* ignore a malformed playlist */ }
+    }
     const pngs = Object.values(zip.files).filter((f) => !f.dir && /\.png$/i.test(f.name));
     if (pngs.length === 0) { alert("No fish images found in that ZIP."); return; }
     const imgs = await Promise.all(pngs.map(async (f) => {
