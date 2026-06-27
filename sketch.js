@@ -70,7 +70,7 @@ const BUBBLE_SPAWN_EVERY = 24; // frames between bubbles (higher = fewer bubbles
 const BUBBLE_SPEED_SCALE = 0.7; // rise speed multiplier (lower = slower)
 
 // ---- Reproduction & gentle thinning (calm, not fed-triggered) ----
-const SOFT_TARGET = 16;        // tank drifts toward this many fish
+const SOFT_TARGET = 30;        // tank drifts toward this many fish
 const REPRO_MIN_MS = 60 * 1000;   // a baby appears somewhere every 1–2.5 min
 const REPRO_MAX_MS = 150 * 1000;
 const TRAIL_DIST = 75;         // how far a baby lags behind its parent
