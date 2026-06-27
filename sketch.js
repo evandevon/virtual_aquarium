@@ -35,7 +35,7 @@ const FOOD_MAX = 60;           // total flakes alive at once (perf cap)
 const SEEK_RADIUS = 150;       // how far a fish notices food
 const SATIATED_FRAMES = 300;   // ~5s a fish ignores food after a bite
 const GROW_PER_FEED = 1.08;    // size step per flake eaten
-const FEED_MAX = 2.0;          // feeding tops out at 2x adult size
+const FEED_MAX = 1.5;          // feeding tops out at 2x adult size
 
 // ---- Size / growing up ----
 const FISH_START_SCALE = 1.2;  // adult size of brand-new (scanned) fish
@@ -70,7 +70,7 @@ const BUBBLE_SPAWN_EVERY = 24; // frames between bubbles (higher = fewer bubbles
 const BUBBLE_SPEED_SCALE = 0.7; // rise speed multiplier (lower = slower)
 
 // ---- Reproduction & gentle thinning (calm, not fed-triggered) ----
-const SOFT_TARGET = 30;        // tank drifts toward this many fish
+const SOFT_TARGET = 35;        // tank drifts toward this many fish
 const REPRO_MIN_MS = 60 * 1000;   // a baby appears somewhere every 1–2.5 min
 const REPRO_MAX_MS = 150 * 1000;
 const TRAIL_DIST = 75;         // how far a baby lags behind its parent
@@ -93,14 +93,14 @@ const DEPTH_CONTRAST = 0.8;    // contrast multiplier at the very back
 
 // ---- Shark (calm visitor) ----
 const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
-const SHARK_SCARE_RADIUS = 650;          // fish notice it from far away
+const SHARK_SCARE_RADIUS = 900;          // fish notice it from far away
 const SHARK_SPEED = 0.8;                 // px/frame (slow, unhurried)
 const SHARK_SCALE = 1.5;                 // overall shark size multiplier
 // When the shark clears a fish's flee bubble, the fish briefly swims to a fresh
 // random height + depth so the school fans back out instead of loitering low.
 const SCATTER_MIN = 200;                 // safety cap on the spread-out (frames);
 const SCATTER_MAX = 320;                 // fish normally finish on reaching their level
-const SCATTER_SPEED = 3.0;               // how briskly fish dart to their new level
+const SCATTER_SPEED = 5.0;               // how briskly fish dart to their new level
 const SCATTER_LEAN = 1.0;                // steeper climb/dive allowed while scattering
 
 // ---- Idle display mode ----
