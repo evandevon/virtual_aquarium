@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM
+   CLASSROOM AQUARIUM   —   v1.4
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.12";
+const VERSION = "v1.13";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -35,7 +35,7 @@ const FOOD_MAX = 60;           // total flakes alive at once (perf cap)
 const SEEK_RADIUS = 150;       // how far a fish notices food
 const SATIATED_FRAMES = 300;   // ~5s a fish ignores food after a bite
 const GROW_PER_FEED = 1.08;    // size step per flake eaten
-const FEED_MAX = 1.5;          // feeding tops out at 2x adult size
+const FEED_MAX = 2.0;          // feeding tops out at 2x adult size
 
 // ---- Size / growing up ----
 const FISH_START_SCALE = 1.2;  // adult size of brand-new (scanned) fish
@@ -70,7 +70,7 @@ const BUBBLE_SPAWN_EVERY = 24; // frames between bubbles (higher = fewer bubbles
 const BUBBLE_SPEED_SCALE = 0.7; // rise speed multiplier (lower = slower)
 
 // ---- Reproduction & gentle thinning (calm, not fed-triggered) ----
-const SOFT_TARGET = 35;        // tank drifts toward this many fish
+const SOFT_TARGET = 16;        // tank drifts toward this many fish
 const REPRO_MIN_MS = 60 * 1000;   // a baby appears somewhere every 1–2.5 min
 const REPRO_MAX_MS = 150 * 1000;
 const TRAIL_DIST = 75;         // how far a baby lags behind its parent
@@ -93,28 +93,31 @@ const DEPTH_CONTRAST = 0.8;    // contrast multiplier at the very back
 
 // ---- Shark (calm visitor) ----
 const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
-const SHARK_SCARE_RADIUS = 900;          // fish notice it from far away
+const SHARK_SCARE_RADIUS = 650;          // fish notice it from far away
 const SHARK_SPEED = 0.8;                 // px/frame (slow, unhurried)
 const SHARK_SCALE = 1.5;                 // overall shark size multiplier
 // When the shark clears a fish's flee bubble, the fish briefly swims to a fresh
 // random height + depth so the school fans back out instead of loitering low.
 const SCATTER_MIN = 200;                 // safety cap on the spread-out (frames);
 const SCATTER_MAX = 320;                 // fish normally finish on reaching their level
-const SCATTER_SPEED = 5.0;               // how briskly fish dart to their new level
+const SCATTER_SPEED = 3.0;               // how briskly fish dart to their new level
 const SCATTER_LEAN = 1.0;                // steeper climb/dive allowed while scattering
 
 // ---- Idle display mode ----
 const IDLE_MS = 150 * 1000;    // hide the UI after this long with no interaction
 
 // ---- Foreground rocks & coral ----
-const FOREGROUND_SCALE = 1.5;  // size of the rocks/coral clusters
+const FOREGROUND_SCALE = 1.5;  // size of the (fallback) procedural rocks/coral clusters
+const FOREGROUND_HIDE_POINTS = 6;   // shark-hiding spots spread along the foreground image
+const FOREGROUND_HIDE_FRAC = 0.5;   // where fish tuck in: 0 = image top edge, 1 = bottom
 
 let appState = "intro";        // "intro" | "running"
 
 // Assets
 let bgImg, bgMusic;
+let fgImg;                     // full-width foreground image (replaces procedural rocks/coral)
 let splashSounds = [];
-let assetsReady = { bg: false, music: false, splash: [false, false, false] };
+let assetsReady = { bg: false, fg: false, music: false, splash: [false, false, false] };
 
 // Webcam + previewer
 let video, videoSelect;
@@ -188,6 +191,10 @@ function preload() {
   bgImg = loadImage("assets/reef.jpg",
     () => { assetsReady.bg = true; },
     () => { console.warn("reef.jpg not found yet"); });
+
+  fgImg = loadImage("assets/foreground_1.png",
+    () => { assetsReady.fg = true; },
+    () => { console.warn("foreground_1.png not found yet (falling back to procedural rocks/coral)"); });
 
   bgMusic = loadSound("assets/ambience.mp3",
     () => { assetsReady.music = true; },
@@ -1800,10 +1807,25 @@ class Shark {
 }
 
 // ============================ FOREGROUND =================================
-// Procedural rocks & coral, unique each load. To switch to image files later,
-// replace buildForeground/drawForeground with loads/draws of foreground_1..3.png.
+// Foreground is the full-width image `foreground_1.png`; fish/shark tuck behind it
+// and flee to hide-points spread along it. If the image is missing, fall back to
+// the procedural rocks & coral so the tank still has cover.
 function buildForeground(a) {
   shelters = [];
+
+  if (assetsReady.fg && fgImg && fgImg.width) {
+    const imgH = a.w * (fgImg.height / fgImg.width);          // full-width stretch, auto height
+    const baseHideY = (a.h - imgH) + imgH * FOREGROUND_HIDE_FRAC;
+    const n = FOREGROUND_HIDE_POINTS;
+    for (let i = 0; i < n; i++) {
+      const hx = a.w * ((i + 0.5) / n) + random(-a.w * 0.04, a.w * 0.04);
+      const hy = baseHideY + random(-imgH * 0.12, imgH * 0.12); // slight stagger
+      shelters.push({ type: "image", hideX: hx, hideY: hy });
+    }
+    return;
+  }
+
+  // Fallback: procedural rocks & coral (only when the image didn't load).
   const n = floor(random(3, 5)); // 3-4 clusters
   for (let i = 0; i < n; i++) {
     const x = map(i + 0.5, 0, n, 0, a.w) + random(-a.w * 0.06, a.w * 0.06);
@@ -1850,6 +1872,18 @@ function makeCoral(x, a) {
 }
 
 function drawForeground() {
+  const a = aquarium();
+
+  // Image foreground: stretch to the tank width, height from the aspect ratio,
+  // anchored to the bottom. Fish/shark are already drawn behind this.
+  if (assetsReady.fg && fgImg && fgImg.width) {
+    const imgH = a.w * (fgImg.height / fgImg.width);
+    imageMode(CORNER);                       // fish set CENTER; reset for a corner-anchored draw
+    image(fgImg, 0, a.h - imgH, a.w, imgH);
+    return;
+  }
+
+  // Fallback: procedural rocks & coral.
   noStroke();
   for (const s of shelters) {
     push();
