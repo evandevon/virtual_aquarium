@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.11";
+const VERSION = "v1.12";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
@@ -38,13 +38,13 @@ const GROW_PER_FEED = 1.08;    // size step per flake eaten
 const FEED_MAX = 2.0;          // feeding tops out at 2x adult size
 
 // ---- Size / growing up ----
-const FISH_START_SCALE = 1.5;  // adult size of brand-new (scanned) fish
+const FISH_START_SCALE = 1.2;  // adult size of brand-new (scanned) fish
 const BABY_START = 0.35;       // a baby starts at this fraction of adult size
 const MATURE_FRAMES = 60 * 90; // ~90s for a baby to grow up
 
 // ---- Movement feel ----
 const TURN_EASE = 0.05;        // how softly fish arc when turning (higher = quicker)
-const LEAN_WANDER = 0.40;      // gentle baseline up/down lean while drifting (radians)
+const LEAN_WANDER = 0.14;      // gentle baseline up/down lean while drifting (radians)
 const LEAN_EDGE = 0.45;        // lean used to steer away from top/bottom
 const PITCH_SEEK = 0.7;        // steeper lean allowed when chasing food / hiding
 const SIDE_MARGIN = 130;       // how early a fish starts its turn near a side wall
@@ -53,7 +53,7 @@ const TURN_MAX_FRAMES = 900;
 const TURN_CHANCE = 0.35;
 
 // ---- Flourishes (brief random moves; only a couple happen at once) ----
-const MAX_FLOURISH = 4;        // max fish doing a flourish at the same time
+const MAX_FLOURISH = 2;        // max fish doing a flourish at the same time
 const FLOURISH_CHECK = 90;     // frames between "should someone flourish?" checks
 const FLOURISH_CHANCE = 0.5;   // chance to start one when below the cap
 const FLOURISH_MIN = 150;      // duration range for timed flourishes (frames)
@@ -76,19 +76,19 @@ const REPRO_MAX_MS = 150 * 1000;
 const TRAIL_DIST = 75;         // how far a baby lags behind its parent
 
 // ---- Depth (parallax layers) ----
-const DEPTH_LAYERS = 3;       // number of depth bands
-const DEPTH_BACK_SCALE = 0.7; // size of the furthest fish vs nearest
+const DEPTH_LAYERS = 10;       // number of depth bands
+const DEPTH_BACK_SCALE = 0.52; // size of the furthest fish vs nearest
 // Atmospheric perspective: distant fish are hazier, duller, flatter and dimmer,
 // so they read as receding into the water rather than just shrinking. The cool
 // tint below is a gentle hue cast; the real desaturation/haze/contrast falloff
 // is done by a depth-scaled canvas filter in draw() (saturate/brightness/
 // contrast/blur), which a multiplicative tint alone can't achieve.
-const DEPTH_TINT_R = 190;      // soft cool cast (the filter does the desaturating)
+const DEPTH_TINT_R = 210;      // soft cool cast (the filter does the desaturating)
 const DEPTH_TINT_G = 228;
 const DEPTH_TINT_B = 255;
-const DEPTH_BLUR_MAX = 1;    // px of haze at the very back (0 disables blur)
-const DEPTH_SAT      = 0.7;    // saturation multiplier at the very back
-const DEPTH_BRIGHT   = 0.7;   // brightness multiplier at the very back
+const DEPTH_BLUR_MAX = 2.2;    // px of haze at the very back (0 disables blur)
+const DEPTH_SAT      = 0.5;    // saturation multiplier at the very back
+const DEPTH_BRIGHT   = 0.78;   // brightness multiplier at the very back
 const DEPTH_CONTRAST = 0.8;    // contrast multiplier at the very back
 
 // ---- Shark (calm visitor) ----
@@ -96,6 +96,12 @@ const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
 const SHARK_SCARE_RADIUS = 650;          // fish notice it from far away
 const SHARK_SPEED = 0.8;                 // px/frame (slow, unhurried)
 const SHARK_SCALE = 1.5;                 // overall shark size multiplier
+// When the shark clears a fish's flee bubble, the fish briefly swims to a fresh
+// random height + depth so the school fans back out instead of loitering low.
+const SCATTER_MIN = 200;                 // safety cap on the spread-out (frames);
+const SCATTER_MAX = 320;                 // fish normally finish on reaching their level
+const SCATTER_SPEED = 3.0;               // how briskly fish dart to their new level
+const SCATTER_LEAN = 1.0;                // steeper climb/dive allowed while scattering
 
 // ---- Idle display mode ----
 const IDLE_MS = 150 * 1000;    // hide the UI after this long with no interaction
@@ -1372,6 +1378,7 @@ class Fish {
     this.depthTimer = random(360, 900);
 
     this.hideX = 0; this.hideY = 0;
+    this.scatterY = 0; // target height for the post-shark spread-out
     this.alpha = 0;                           // fade in
     this.alphaTarget = 1;
     this.gone = false;
@@ -1493,9 +1500,26 @@ class Fish {
 
     } else if (this.state === "flee") {
       this.flour = null;
-      if (--this.timer <= 0) this.state = "wander";
-      this._steerTo(this.hideX, this.hideY, PITCH_SEEK);
-      targetSpeed = Math.hypot(this.hideX - this.x, this.hideY - this.y) > 60 ? this.baseSpeed * 1.8 : this.baseSpeed * 0.2;
+      if (--this.timer <= 0) {
+        // Shark's gone: pick a fresh random height + depth and swim there, so the
+        // school spreads back out immediately instead of loitering near the floor.
+        const topM = a.margin + this.h, botM = a.h - a.margin - this.h;
+        this.scatterY = random(topM, botM);
+        this.depthTarget = floor(random(DEPTH_LAYERS)) / (DEPTH_LAYERS - 1);
+        this.pitch = this.scatterY < this.y ? -0.85 : 0.6; // jump-start the climb (skip the slow ease-in)
+        this.timer = random(SCATTER_MIN, SCATTER_MAX);
+        this.state = "scatter";
+      } else {
+        this._steerTo(this.hideX, this.hideY, PITCH_SEEK);
+        targetSpeed = Math.hypot(this.hideX - this.x, this.hideY - this.y) > 60 ? this.baseSpeed * 1.8 : this.baseSpeed * 0.2;
+      }
+
+    } else if (this.state === "scatter") {
+      this.flour = null;
+      this._steerTo(this.x, this.scatterY, SCATTER_LEAN);   // steep lean to the new level
+      depthEase = SEEK_DEPTH_EASE;                           // re-layer to the new depth briskly
+      targetSpeed = this.baseSpeed * SCATTER_SPEED;          // a brisk rise, like surfacing after hiding
+      if (--this.timer <= 0 || Math.abs(this.scatterY - this.y) < 30) this.state = "wander";
 
     } else if (target) {
       // Food is up for grabs: come to the front layer (food is only eaten
