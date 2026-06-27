@@ -20,21 +20,10 @@ little reef. Built with [p5.js](https://p5js.org/).
   flip the image before you capture it.
 - Tap the **webcam preview** any time to switch the previewer back to live.
 - **Tap a fish** to turn it around; **press and hold** a fish to remove it.
-- **Tap or swipe** open water to scare the fish; **hold still** on the water to
-  drop food. Fish that eat **grow**, and every few feeds an original spawns a
-  small **clone** of itself (cloning pauses at the fish cap).
+- **hold still** on the water to drop food. Fish that eat **grow**. Sometimes baby fish clones are spawned
 - A **shark** silhouette passes through roughly every 5 minutes; the fish flee
   and hide behind the rocks and coral. The shark never eats them.
 - **Backup/Restore Tank** saves or reloads all current fish as a ZIP.
-
-## Swapping the rocks & coral for your own art
-
-The foreground is generated procedurally (unique each load). To use your own
-pictures instead, drop `foreground_1.png`, `foreground_2.png`,
-`foreground_3.png` (transparent PNGs) in `assets/`, preload them, and replace
-the bodies of `buildForeground()` / `drawForeground()` in `sketch.js` to pick
-one at random and draw it across the bottom. The fish hide logic keys off each
-shelter's `hideX`/`hideY`, so set those per image and the behaviour still works.
 
 ## OpenProcessing
 
