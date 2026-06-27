@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM   —   v1.4
+   CLASSROOM AQUARIUM
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
