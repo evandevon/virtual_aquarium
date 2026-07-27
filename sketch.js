@@ -1,5 +1,5 @@
 /* =========================================================================
-   CLASSROOM AQUARIUM
+   CLASSROOM AQUARIUM   —   v1.4
    - Draw a fish on paper -> scan with webcam, OR paste an image, OR upload one.
    - Images route through the previewer for background removal, then "Capture".
    - Fish swim, occasionally dart and tilt.
@@ -76,20 +76,20 @@ const REPRO_MAX_MS = 150 * 1000;
 const TRAIL_DIST = 75;         // how far a baby lags behind its parent
 
 // ---- Depth (parallax layers) ----
-const DEPTH_LAYERS = 10;       // number of depth bands
+const DEPTH_LAYERS = 5;        // number of depth bands
 const DEPTH_BACK_SCALE = 0.52; // size of the furthest fish vs nearest
-// Atmospheric perspective: distant fish are hazier, duller, flatter and dimmer,
-// so they read as receding into the water rather than just shrinking. The cool
-// tint below is a gentle hue cast; the real desaturation/haze/contrast falloff
-// is done by a depth-scaled canvas filter in draw() (saturate/brightness/
-// contrast/blur), which a multiplicative tint alone can't achieve.
-const DEPTH_TINT_R = 210;      // soft cool cast (the filter does the desaturating)
-const DEPTH_TINT_G = 228;
-const DEPTH_TINT_B = 255;
-const DEPTH_BLUR_MAX = 2.2;    // px of haze at the very back (0 disables blur)
-const DEPTH_SAT      = 0.5;    // saturation multiplier at the very back
-const DEPTH_BRIGHT   = 0.78;   // brightness multiplier at the very back
-const DEPTH_CONTRAST = 0.8;    // contrast multiplier at the very back
+// Atmospheric perspective (performant): instead of a per-frame canvas filter
+// (expensive, and it scaled with fish count), each fish image gets ONE pre-baked
+// desaturated + softly-blurred "far" copy, cached on the image and shared by
+// babies/duplicates. draw() then cross-fades to it by depth with a second image()
+// call — a cheap GPU blit, so the cost stays flat as the tank fills. FAR_* tune
+// the baked copy; the cool cast is applied as a tint when the far copy is drawn.
+const FAR_BLUR_PX = 2.2;       // baked haze radius (px); 0 = no blur
+const FAR_SAT     = 0.5;       // baked saturation (1 = untouched)
+const FAR_BRIGHT  = 0.82;      // baked brightness (1 = untouched)
+const FAR_TINT_R  = 205;       // cool cast applied to the far copy on draw
+const FAR_TINT_G  = 224;
+const FAR_TINT_B  = 255;
 
 // ---- Shark (calm visitor) ----
 const SHARK_INTERVAL_MS = 5 * 60 * 1000; // a shark passes ~every 5 minutes
@@ -1347,6 +1347,28 @@ function windowResized() {
 }
 
 // ============================ FISH =======================================
+
+// Pre-baked "far" copy of a fish image for the depth haze: desaturated, dimmed
+// and softly blurred ONCE, then cached on the image object so every fish sharing
+// that image (babies, restored duplicates) reuses it. Padded so the blur halo
+// isn't clipped at the edges. draw() cross-fades to this by depth.
+function farImageFor(img) {
+  if (img._far) return img._far;
+  if (!img || !img.width || !img.height) return null;
+  const pad = Math.ceil(FAR_BLUR_PX * 3);
+  const g = createGraphics(img.width + pad * 2, img.height + pad * 2);
+  g.pixelDensity(1);
+  g.clear();
+  g.imageMode(CORNER);
+  if (FAR_BLUR_PX > 0 || FAR_SAT !== 1 || FAR_BRIGHT !== 1) {
+    g.drawingContext.filter = `blur(${FAR_BLUR_PX}px) saturate(${FAR_SAT}) brightness(${FAR_BRIGHT})`;
+  }
+  g.image(img, pad, pad, img.width, img.height);
+  g.drawingContext.filter = "none";
+  img._far = g;                 // p5.Graphics; drawable via image(), has .width/.height
+  return g;
+}
+
 class Fish {
   constructor(img, a, opts = {}) {
     this.id = ++fishSeq;
@@ -1602,32 +1624,33 @@ class Fish {
     const ds = lerp(1, DEPTH_BACK_SCALE, d);
     const w = this.w * ds, h = this.h * ds;
     const sway = Math.sin(this.swayTime) * 3 * ds;
-    const r = lerp(255, DEPTH_TINT_R, d);
-    const g = lerp(255, DEPTH_TINT_G, d);
-    const b = lerp(255, DEPTH_TINT_B, d);
-    const a = 255 * constrain(this.alpha, 0, 1); // opacity no longer fades with depth
+    const alpha = constrain(this.alpha, 0, 1);
 
     const fdir = this.face >= 0 ? 1 : -1;
     const heading = Math.atan2(Math.sin(this.pitch), fdir * Math.cos(this.pitch));
 
     push();
-    tint(r, g, b, a);
     translate(this.x, this.y + sway);
     scale(-this.face, 1);                 // continuous mirror; squishes to a sliver mid-turn
     rotate(fdir >= 0 ? -heading : heading + PI);
     imageMode(CENTER);
 
-    // Atmospheric perspective for the back fish (front fish stay crisp + cheap).
-    const filtered = d > 0.04;
-    if (filtered) {
-      const blur = DEPTH_BLUR_MAX * d;
-      const sat  = lerp(1, DEPTH_SAT, d);
-      const bri  = lerp(1, DEPTH_BRIGHT, d);
-      const con  = lerp(1, DEPTH_CONTRAST, d);
-      drawingContext.filter = `blur(${blur}px) saturate(${sat}) brightness(${bri}) contrast(${con})`;
-    }
+    // Crisp fish.
+    tint(255, 255, 255, 255 * alpha);
     image(this.img, 0, 0, w, h);
-    if (filtered) drawingContext.filter = "none";
+
+    // Depth haze: cross-fade to a pre-baked desaturated/blurred copy by depth.
+    // The bake happens once per image (cached + shared by babies); per frame this
+    // is just one extra GPU blit, so it stays cheap however many fish there are.
+    if (d > 0.03 && this.img && this.img.width) {
+      const far = farImageFor(this.img);
+      if (far) {
+        const fw = w * (far.width / this.img.width);   // padded copy -> keep body aligned
+        const fh = h * (far.height / this.img.height);
+        tint(FAR_TINT_R, FAR_TINT_G, FAR_TINT_B, 255 * alpha * d);
+        image(far, 0, 0, fw, fh);
+      }
+    }
     pop();
   }
 
