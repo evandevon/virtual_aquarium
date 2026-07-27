@@ -8,7 +8,7 @@
 
    VERSION: bump this on each change. Keep it in sync with the comment in index.html.
    ========================================================================= */
-const VERSION = "v1.13";
+const VERSION = "v1.14";
 
 // ---- Mask / preview buffer size (kept small for speed) ----
 const panelW = 320;
